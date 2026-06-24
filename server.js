@@ -221,6 +221,7 @@ app.get('/api/live', (req, res) => {
     `event: connected\ndata: ${JSON.stringify({
       lastScanAt: getLastScanAt(),
       dbStatus: getDbStatus(),
+      aiHealth: lastAIHealth,
     })}\n\n`
   );
   addClient(res);

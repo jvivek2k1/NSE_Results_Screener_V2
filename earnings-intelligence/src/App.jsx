@@ -12,6 +12,7 @@ import Leaderboard from './components/Leaderboard.jsx';
 import WatchlistPanel from './components/WatchlistPanel.jsx';
 import UpcomingResults from './components/UpcomingResults.jsx';
 import DbStatusBanner from './components/DbStatusBanner.jsx';
+import AiStatusBanner from './components/AiStatusBanner.jsx';
 
 const PAGE_SIZE = 25;
 
@@ -143,7 +144,7 @@ export default function App() {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5000);
   }, []);
 
-  const { connected, dbStatus: liveDbStatus } = useLive({
+  const { connected, dbStatus: liveDbStatus, aiStatus: liveAiStatus } = useLive({
     onResult: (row) => {
       flash(row.Ticker);
       loadResults();
@@ -171,6 +172,14 @@ export default function App() {
 
   // Prefer the live SSE status; fall back to the value embedded in /api/meta.
   const dbStatus = liveDbStatus ?? meta?.dbStatus ?? null;
+  const aiStatus = liveAiStatus ?? meta?.aiHealth ?? null;
+
+  // The dashboard is only "LIVE" when the SSE stream is connected AND neither
+  // the database nor the AI model connection has explicitly failed. A failure
+  // of either dependency flips the header indicator from LIVE to OFFLINE.
+  const dbDown = dbStatus?.ok === false;
+  const aiDown = aiStatus?.ok === false && !aiStatus?.skipped;
+  const isLive = connected && !dbDown && !aiDown;
 
   // ---- Actions ----
   const handleScan = async () => {
@@ -214,13 +223,14 @@ export default function App() {
     <div className="min-h-screen bg-slate-900 text-slate-200">
       <Header
         meta={meta}
-        connected={connected}
+        connected={isLive}
         totalCompanies={meta?.companiesProcessed ?? stats?.companiesProcessed}
         onScan={handleScan}
         scanning={scanning}
       />
 
       <DbStatusBanner dbStatus={dbStatus} />
+      <AiStatusBanner aiStatus={aiStatus} />
 
       <main className="mx-auto max-w-[1600px] px-4 py-5 space-y-5">
         <StatCards stats={stats} />

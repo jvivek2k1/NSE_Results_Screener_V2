@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 export function useLive({ onResult, onAlert, onScan, onConnect } = {}) {
   const [connected, setConnected] = useState(false);
   const [dbStatus, setDbStatus] = useState(null);
+  const [aiStatus, setAiStatus] = useState(null);
   const handlers = useRef({ onResult, onAlert, onScan, onConnect });
   handlers.current = { onResult, onAlert, onScan, onConnect };
 
@@ -15,6 +16,7 @@ export function useLive({ onResult, onAlert, onScan, onConnect } = {}) {
       try {
         const data = JSON.parse(e.data);
         if (data?.dbStatus) setDbStatus(data.dbStatus);
+        if (data?.aiHealth) setAiStatus(data.aiHealth);
       } catch {
         /* ignore */
       }
@@ -26,6 +28,13 @@ export function useLive({ onResult, onAlert, onScan, onConnect } = {}) {
     es.addEventListener('db-status', (e) => {
       try {
         setDbStatus(JSON.parse(e.data));
+      } catch {
+        /* ignore */
+      }
+    });
+    es.addEventListener('ai-health', (e) => {
+      try {
+        setAiStatus(JSON.parse(e.data));
       } catch {
         /* ignore */
       }
@@ -56,5 +65,5 @@ export function useLive({ onResult, onAlert, onScan, onConnect } = {}) {
     return () => es.close();
   }, []);
 
-  return { connected, dbStatus };
+  return { connected, dbStatus, aiStatus };
 }
