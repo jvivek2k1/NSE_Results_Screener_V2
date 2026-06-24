@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.log
+earnings.db
+earnings.db-journal
+earnings.db-wal
+earnings.db-shm
+dist/
+.DS_Store

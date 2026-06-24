@@ -1,0 +1,32 @@
+{
+  "name": "nse-results-screener-backend",
+  "version": "1.0.0",
+  "description": "Indian Quarterly Results Intelligence Platform - Backend",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "web": "npm --prefix earnings-intelligence run dev",
+    "app": "concurrently -k -n api,web -c green,cyan \"node server.js\" \"npm --prefix earnings-intelligence run dev\"",
+    "install:all": "npm install && npm --prefix earnings-intelligence install"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.13.1",
+    "adm-zip": "^0.5.17",
+    "axios": "^1.7.2",
+    "better-sqlite3": "^11.3.0",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "mssql": "^11.0.1",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^9.0.1",
+    "openai": "^6.44.0",
+    "pdf-parse": "^2.4.5",
+    "yahoo-finance2": "^2.11.3"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}
