@@ -1,5 +1,18 @@
 import { AlertTriangle, Database, Loader2 } from 'lucide-react';
 
+// Reduces a verbose driver error to just the first sentence (the error),
+// dropping any "Reason: …" detail and "For more information…" link.
+function shortError(error) {
+  let text = String(error || '')
+    .replace(/^\s*reason:\s*/i, '')
+    .replace(/\s*reason:.*$/is, '')
+    .replace(/\s*for more information.*$/is, '')
+    .trim();
+  const firstSentence = text.match(/^[^.]*\./);
+  if (firstSentence) text = firstSentence[0];
+  return text.trim();
+}
+
 // Shows a prominent banner whenever the data store (Azure SQL serverless) is
 // unreachable or resuming. Renders nothing while the database is healthy.
 export default function DbStatusBanner({ dbStatus }) {
@@ -14,11 +27,6 @@ export default function DbStatusBanner({ dbStatus }) {
   const title = resuming
     ? 'Connecting to the database…'
     : 'Database connection issue';
-  const detail = resuming
-    ? `The ${dbStatus.database || ''} serverless database may be paused and is resuming. Retrying automatically…`
-    : `Cannot reach ${dbStatus.database || 'the database'}${
-        dbStatus.server ? ` on ${dbStatus.server}` : ''
-      }. Showing the last loaded data; retrying automatically.`;
 
   return (
     <div className={`mx-auto max-w-[1600px] px-4 pt-3`}>
@@ -29,10 +37,9 @@ export default function DbStatusBanner({ dbStatus }) {
             <Database className="h-4 w-4" />
             {title}
           </div>
-          <p className="mt-0.5 text-xs opacity-90">{detail}</p>
           {dbStatus.error && !resuming && (
             <p className="mt-1 text-[11px] font-mono opacity-70 break-words">
-              {dbStatus.error}
+              {shortError(dbStatus.error)}
             </p>
           )}
         </div>

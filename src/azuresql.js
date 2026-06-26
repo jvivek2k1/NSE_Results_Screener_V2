@@ -196,6 +196,7 @@ async function query(build) {
 const T_RESULTS = 'dbo.jb_QuarterlyResults';
 const T_WATCHLIST = 'dbo.jb_Watchlist';
 const T_ALERTS = 'dbo.jb_Alerts';
+const T_UPCOMING = 'dbo.jb_UpcomingResults';
 
 async function ensureSchema(activePool) {
   await activePool.request().batch(`
@@ -257,6 +258,24 @@ async function ensureSchema(activePool) {
       Score FLOAT NULL,
       CreatedAt NVARCHAR(40) NULL
     );
+
+    IF OBJECT_ID('${T_UPCOMING}', 'U') IS NULL
+    CREATE TABLE ${T_UPCOMING} (
+      Ticker NVARCHAR(32) NOT NULL,
+      CompanyName NVARCHAR(256) NULL,
+      Sector NVARCHAR(128) NULL,
+      MeetingDate NVARCHAR(40) NOT NULL,
+      Quarter NVARCHAR(32) NULL,
+      Purpose NVARCHAR(256) NULL,
+      Status NVARCHAR(32) NOT NULL DEFAULT 'pending',
+      PublishedAt NVARCHAR(40) NULL,
+      FirstSeenAt NVARCHAR(40) NULL,
+      UpdatedAt NVARCHAR(40) NULL,
+      CONSTRAINT jb_PK_UpcomingResults PRIMARY KEY (Ticker, MeetingDate)
+    );
+
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'jb_idx_upcoming_date')
+      CREATE INDEX jb_idx_upcoming_date ON ${T_UPCOMING} (MeetingDate);
   `);
 }
 
@@ -359,6 +378,23 @@ export function createAzureSqlRepo() {
           )
       );
       return rs.recordset.length > 0;
+    },
+
+    async getAllFilingKeys() {
+      const rs = await query((req) =>
+        req.query(`SELECT Ticker, Quarter, QuarterIndex, AnnouncementTime FROM ${T_RESULTS}`)
+      );
+      return rs.recordset;
+    },
+
+    async deleteFiling(ticker, quarter) {
+      const rs = await query((req) =>
+        req
+          .input('ticker', sql.NVarChar(32), ticker)
+          .input('quarter', sql.NVarChar(32), quarter)
+          .query(`DELETE FROM ${T_RESULTS} WHERE Ticker = @ticker AND Quarter = @quarter`)
+      );
+      return rs.rowsAffected?.[0] ?? 0;
     },
 
     async insertResult(r) {
@@ -616,6 +652,80 @@ export function createAzureSqlRepo() {
         req.query(`SELECT MAX(Score) AS m FROM ${T_RESULTS}`)
       );
       return rs.recordset[0].m || 0;
+    },
+
+    // -------- Upcoming results (NSE board-meeting calendar) --------
+    async upsertUpcoming(u) {
+      const now = new Date().toISOString();
+      const rs = await query((req) =>
+        req
+          .input('Ticker', sql.NVarChar(32), u.Ticker)
+          .input('CompanyName', sql.NVarChar(256), u.CompanyName ?? null)
+          .input('Sector', sql.NVarChar(128), u.Sector ?? null)
+          .input('MeetingDate', sql.NVarChar(40), u.MeetingDate)
+          .input('Quarter', sql.NVarChar(32), u.Quarter ?? null)
+          .input('Purpose', sql.NVarChar(256), u.Purpose ?? null)
+          .input('now', sql.NVarChar(40), now)
+          .query(`
+            IF EXISTS (SELECT 1 FROM ${T_UPCOMING} WHERE Ticker = @Ticker AND MeetingDate = @MeetingDate)
+              UPDATE ${T_UPCOMING}
+                SET CompanyName = @CompanyName, Sector = @Sector,
+                    Quarter = @Quarter, Purpose = @Purpose, UpdatedAt = @now
+              WHERE Ticker = @Ticker AND MeetingDate = @MeetingDate;
+            ELSE
+              INSERT INTO ${T_UPCOMING}
+                (Ticker, CompanyName, Sector, MeetingDate, Quarter, Purpose, Status, PublishedAt, FirstSeenAt, UpdatedAt)
+              VALUES
+                (@Ticker, @CompanyName, @Sector, @MeetingDate, @Quarter, @Purpose, 'pending', NULL, @now, @now);
+            SELECT * FROM ${T_UPCOMING} WHERE Ticker = @Ticker AND MeetingDate = @MeetingDate;
+          `)
+      );
+      return rs.recordset[0];
+    },
+
+    async getUpcoming(limit = 10) {
+      const today = new Date().toLocaleDateString('en-CA');
+      const rs = await query((req) =>
+        req
+          .input('today', sql.NVarChar(10), today)
+          .input('limit', sql.Int, limit)
+          .query(
+            `SELECT TOP (@limit) * FROM ${T_UPCOMING}
+             WHERE LEFT(MeetingDate, 10) >= @today
+             ORDER BY MeetingDate ASC`
+          )
+      );
+      return rs.recordset;
+    },
+
+    async getUpcomingDueToday() {
+      const today = new Date().toLocaleDateString('en-CA');
+      const rs = await query((req) =>
+        req
+          .input('today', sql.NVarChar(10), today)
+          .query(
+            `SELECT * FROM ${T_UPCOMING}
+             WHERE LEFT(MeetingDate, 10) = @today AND Status <> 'published'`
+          )
+      );
+      return rs.recordset;
+    },
+
+    async markUpcomingPublished(ticker, meetingDate, publishedAt) {
+      const now = new Date().toISOString();
+      await query((req) =>
+        req
+          .input('ticker', sql.NVarChar(32), ticker)
+          .input('meetingDate', sql.NVarChar(40), meetingDate)
+          .input('publishedAt', sql.NVarChar(40), publishedAt || now)
+          .input('now', sql.NVarChar(40), now)
+          .query(
+            `UPDATE ${T_UPCOMING}
+               SET Status = 'published', PublishedAt = @publishedAt, UpdatedAt = @now
+             WHERE Ticker = @ticker AND MeetingDate = @meetingDate`
+          )
+      );
+      return { ticker, meetingDate, status: 'published', publishedAt: publishedAt || now };
     },
   };
 }

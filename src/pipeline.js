@@ -3,10 +3,14 @@
 // AI analysis -> persist latest -> alerts -> live broadcast.
 // ============================================================
 import { repo } from './db.js';
+import { config } from './config.js';
 import { getNewFilings, fetchSymbolHistory } from './scraper.js';
+import { fetchUpcomingResults, fetchSymbolQuarterlyList } from './nse.js';
 import { computeMetrics, localScore, ratingFromScore } from './scoring.js';
+import { quarterIndexToPeriodEnd } from './quarters.js';
 import { analyzeFiling } from './ai.js';
 import { broadcast } from './sse.js';
+import { trackError } from './telemetry.js';
 
 let lastScanAt = null;
 let scanning = false;
@@ -136,6 +140,95 @@ async function generateAlerts(row) {
   return out;
 }
 
+// Check NSE whether a company's result is now published, i.e. a quarterly
+// filing exists with a broadcast date on/after its board-meeting date. Returns
+// the matching filing summary, or null if not yet published / on error.
+async function checkResultPublished(ticker, meetingDateISO) {
+  try {
+    const list = await fetchSymbolQuarterlyList(ticker);
+    if (!list.length) return null;
+    const meetingDay = (meetingDateISO || '').slice(0, 10);
+    // List is ascending by quarter; scan newest-first for a recent filing.
+    for (let i = list.length - 1; i >= 0; i--) {
+      const it = list[i];
+      if (!it.broadcastISO) continue;
+      if (it.broadcastISO.slice(0, 10) >= meetingDay) {
+        return { quarter: it.quarter, broadcastISO: it.broadcastISO };
+      }
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[pipeline] publish-check failed for ${ticker}:`, err.message);
+    return null;
+  }
+}
+
+// Persist NSE's forthcoming-results (board-meeting) calendar into the data
+// store, then for every board meeting scheduled for TODAY that is still
+// pending, check whether the result has actually been published on NSE. When
+// it has, mark it published and raise an alert.
+export async function syncUpcoming() {
+  let list = [];
+  try {
+    list = await fetchUpcomingResults();
+  } catch (err) {
+    console.warn('[pipeline] upcoming fetch failed:', err.message);
+  }
+
+  let upserted = 0;
+  for (const u of list) {
+    try {
+      await repo.upsertUpcoming({
+        Ticker: u.ticker,
+        CompanyName: u.company,
+        Sector: u.sector,
+        MeetingDate: u.meetingDate,
+        Quarter: u.quarter,
+        Purpose: u.purpose,
+      });
+      upserted++;
+    } catch (err) {
+      console.warn(`[pipeline] upcoming upsert failed for ${u.ticker}:`, err.message);
+    }
+  }
+
+  // For each board meeting due today, verify if the result is now on NSE.
+  let dueToday = [];
+  try {
+    dueToday = await repo.getUpcomingDueToday();
+  } catch (err) {
+    console.warn('[pipeline] due-today query failed:', err.message);
+  }
+
+  let published = 0;
+  for (const u of dueToday) {
+    const hit = await checkResultPublished(u.Ticker, u.MeetingDate);
+    if (!hit) continue;
+    try {
+      await repo.markUpcomingPublished(
+        u.Ticker,
+        u.MeetingDate,
+        hit.broadcastISO || new Date().toISOString()
+      );
+      published++;
+      const alert = await repo.insertAlert({
+        ticker: u.Ticker,
+        companyName: u.CompanyName,
+        type: 'Result Published',
+        message: `${u.Ticker} has published its ${u.Quarter || 'quarterly'} results to NSE.`,
+        score: null,
+      });
+      broadcast('alert', alert);
+    } catch (err) {
+      console.warn(`[pipeline] mark-published failed for ${u.Ticker}:`, err.message);
+    }
+  }
+
+  broadcast('upcoming', { upserted, published, at: new Date().toISOString() });
+  if (published) console.log(`[pipeline] ${published} due-today result(s) now published on NSE`);
+  return { upserted, published };
+}
+
 export async function runScan() {
   if (scanning) return { skipped: true };
   scanning = true;
@@ -159,14 +252,50 @@ export async function runScan() {
       broadcast('result', payload);
       processed.push(payload);
     }
+
+    // Persist NSE's board-meeting calendar and, for any board meeting due
+    // today, check whether the result has actually been published yet.
+    await syncUpcoming();
   } catch (err) {
     console.error('[pipeline] scan error:', err);
+    trackError(err, { source: 'runScan' });
   } finally {
     lastScanAt = new Date().toISOString();
     scanning = false;
   }
   broadcast('scan', { lastScanAt, processed: processed.length });
   return { lastScanAt, processed: processed.length, results: processed };
+}
+
+// Remove already-stored belated/backlog filings whose broadcast (announcement)
+// date lags the quarter's period-end by more than `filingMaxReportingLagDays`.
+// Complements the ingestion-time guard in scraper.js so existing rows (e.g. a
+// years-late Videocon filing) also disappear from the dashboard. Idempotent.
+export async function purgeStaleFilings() {
+  const maxLagDays = config.filingMaxReportingLagDays;
+  if (!maxLagDays || maxLagDays <= 0) return 0;
+  const maxLagMs = maxLagDays * 86400000;
+  let keys;
+  try {
+    keys = await repo.getAllFilingKeys();
+  } catch (err) {
+    console.warn('[pipeline] purge skipped (DB unavailable):', err.message);
+    return 0;
+  }
+  let removed = 0;
+  for (const k of keys || []) {
+    if (k.QuarterIndex == null || !k.AnnouncementTime) continue;
+    const periodEnd = quarterIndexToPeriodEnd(k.QuarterIndex).getTime();
+    const broadcast = new Date(k.AnnouncementTime).getTime();
+    if (Number.isNaN(broadcast) || broadcast - periodEnd <= maxLagMs) continue;
+    try {
+      removed += (await repo.deleteFiling(k.Ticker, k.Quarter)) || 0;
+    } catch (err) {
+      console.warn(`[pipeline] purge failed for ${k.Ticker} ${k.Quarter}:`, err.message);
+    }
+  }
+  if (removed) console.log(`[pipeline] purged ${removed} stale/belated filing(s)`);
+  return removed;
 }
 
 // Attach parsed analysis JSON onto a DB row for API consumers.

@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+name: nse-results-screener
+metadata:
+  template: nse-results-screener@1.0.0
+
+services:
+  web:
+    project: .
+    language: js
+    host: appservice
+
+hooks:
+  postprovision:
+    posix:
+      shell: sh
+      run: node ./scripts/grant-sql-access.mjs
+      interactive: false
+      continueOnError: false
+    windows:
+      shell: pwsh
+      run: node ./scripts/grant-sql-access.mjs
+      interactive: false
+      continueOnError: false

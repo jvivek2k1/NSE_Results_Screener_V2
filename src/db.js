@@ -77,6 +77,21 @@ function createSqliteRepo() {
       Score REAL,
       CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS UpcomingResults (
+      Ticker TEXT NOT NULL,
+      CompanyName TEXT,
+      Sector TEXT,
+      MeetingDate TEXT NOT NULL,
+      Quarter TEXT,
+      Purpose TEXT,
+      Status TEXT NOT NULL DEFAULT 'pending',
+      PublishedAt TEXT,
+      FirstSeenAt TEXT,
+      UpdatedAt TEXT,
+      PRIMARY KEY (Ticker, MeetingDate)
+    );
+    CREATE INDEX IF NOT EXISTS idx_upcoming_date ON UpcomingResults (MeetingDate);
   `);
 
   const insertStmt = db.prepare(`
@@ -245,6 +260,18 @@ function createSqliteRepo() {
         .all()
         .map((r) => r.Sector);
     },
+    // Filing keys (for maintenance/purge tasks).
+    getAllFilingKeys() {
+      return db
+        .prepare('SELECT Ticker, Quarter, QuarterIndex, AnnouncementTime FROM QuarterlyResults')
+        .all();
+    },
+    deleteFiling(ticker, quarter) {
+      const info = db
+        .prepare('DELETE FROM QuarterlyResults WHERE Ticker = ? AND Quarter = ?')
+        .run(ticker, quarter);
+      return info.changes;
+    },
     // Alerts
     insertAlert(a) {
       const info = db
@@ -285,6 +312,60 @@ function createSqliteRepo() {
       const r = db.prepare('SELECT MAX(Score) AS m FROM QuarterlyResults').get();
       return r.m || 0;
     },
+    // Upcoming results (NSE board-meeting calendar)
+    upsertUpcoming(u) {
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO UpcomingResults
+          (Ticker, CompanyName, Sector, MeetingDate, Quarter, Purpose, Status, PublishedAt, FirstSeenAt, UpdatedAt)
+        VALUES (@Ticker, @CompanyName, @Sector, @MeetingDate, @Quarter, @Purpose, 'pending', NULL, @now, @now)
+        ON CONFLICT(Ticker, MeetingDate) DO UPDATE SET
+          CompanyName = excluded.CompanyName,
+          Sector = excluded.Sector,
+          Quarter = excluded.Quarter,
+          Purpose = excluded.Purpose,
+          UpdatedAt = excluded.UpdatedAt
+      `).run({
+        Ticker: u.Ticker,
+        CompanyName: u.CompanyName ?? null,
+        Sector: u.Sector ?? null,
+        MeetingDate: u.MeetingDate,
+        Quarter: u.Quarter ?? null,
+        Purpose: u.Purpose ?? null,
+        now,
+      });
+      return db
+        .prepare('SELECT * FROM UpcomingResults WHERE Ticker = ? AND MeetingDate = ?')
+        .get(u.Ticker, u.MeetingDate);
+    },
+    getUpcoming(limit = 10) {
+      const today = new Date().toLocaleDateString('en-CA');
+      return db
+        .prepare(
+          `SELECT * FROM UpcomingResults WHERE substr(MeetingDate, 1, 10) >= ?
+           ORDER BY MeetingDate ASC LIMIT ?`
+        )
+        .all(today, limit);
+    },
+    getUpcomingDueToday() {
+      const today = new Date().toLocaleDateString('en-CA');
+      return db
+        .prepare(
+          `SELECT * FROM UpcomingResults
+           WHERE substr(MeetingDate, 1, 10) = ? AND Status <> 'published'`
+        )
+        .all(today);
+    },
+    markUpcomingPublished(ticker, meetingDate, publishedAt) {
+      const now = new Date().toISOString();
+      db.prepare(
+        `UPDATE UpcomingResults SET Status = 'published', PublishedAt = ?, UpdatedAt = ?
+         WHERE Ticker = ? AND MeetingDate = ?`
+      ).run(publishedAt || now, now, ticker, meetingDate);
+      return db
+        .prepare('SELECT * FROM UpcomingResults WHERE Ticker = ? AND MeetingDate = ?')
+        .get(ticker, meetingDate);
+    },
   };
 }
 
@@ -295,6 +376,7 @@ function createMemoryRepo() {
   const watchlist = new Map();
   const alerts = [];
   let alertId = 1;
+  const upcoming = []; // NSE board-meeting calendar rows
 
   const latestPerTicker = () => {
     const map = new Map();
@@ -452,6 +534,60 @@ function createMemoryRepo() {
     },
     maxScore() {
       return results.reduce((m, r) => Math.max(m, r.Score || 0), 0);
+    },
+    // Upcoming results (NSE board-meeting calendar)
+    upsertUpcoming(u) {
+      const now = new Date().toISOString();
+      const existing = upcoming.find(
+        (x) => x.Ticker === u.Ticker && x.MeetingDate === u.MeetingDate
+      );
+      if (existing) {
+        existing.CompanyName = u.CompanyName ?? existing.CompanyName;
+        existing.Sector = u.Sector ?? existing.Sector;
+        existing.Quarter = u.Quarter ?? existing.Quarter;
+        existing.Purpose = u.Purpose ?? existing.Purpose;
+        existing.UpdatedAt = now;
+        return existing;
+      }
+      const row = {
+        Ticker: u.Ticker,
+        CompanyName: u.CompanyName ?? null,
+        Sector: u.Sector ?? null,
+        MeetingDate: u.MeetingDate,
+        Quarter: u.Quarter ?? null,
+        Purpose: u.Purpose ?? null,
+        Status: 'pending',
+        PublishedAt: null,
+        FirstSeenAt: now,
+        UpdatedAt: now,
+      };
+      upcoming.push(row);
+      return row;
+    },
+    getUpcoming(limit = 10) {
+      const today = new Date().toLocaleDateString('en-CA');
+      return upcoming
+        .filter((u) => (u.MeetingDate || '').slice(0, 10) >= today)
+        .sort((a, b) => (a.MeetingDate < b.MeetingDate ? -1 : 1))
+        .slice(0, limit);
+    },
+    getUpcomingDueToday() {
+      const today = new Date().toLocaleDateString('en-CA');
+      return upcoming.filter(
+        (u) => (u.MeetingDate || '').slice(0, 10) === today && u.Status !== 'published'
+      );
+    },
+    markUpcomingPublished(ticker, meetingDate, publishedAt) {
+      const now = new Date().toISOString();
+      const row = upcoming.find(
+        (x) => x.Ticker === ticker && x.MeetingDate === meetingDate
+      );
+      if (row) {
+        row.Status = 'published';
+        row.PublishedAt = publishedAt || now;
+        row.UpdatedAt = now;
+      }
+      return row;
     },
   };
 }

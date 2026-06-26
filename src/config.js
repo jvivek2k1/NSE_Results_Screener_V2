@@ -54,7 +54,7 @@ export const config = {
   // Azure SQL (serverless) connection. Auth is Entra ID only (no SQL auth) via
   // @azure/identity DefaultAzureCredential — az login locally, or a managed
   // identity when hosted. No passwords are ever read or stored.
-  azureSqlServer: process.env.AZURE_SQL_SERVER || 'jbsserver.database.windows.net',
+  azureSqlServer: process.env.AZURE_SQL_SERVER || 'sql-aev7ydnz74wgi.database.windows.net',
   azureSqlDatabase: process.env.AZURE_SQL_DATABASE || 'JBDB',
   azureSqlPort: parseInt(process.env.AZURE_SQL_PORT || '1433', 10),
   // Connection timeout per attempt — generous so a paused serverless DB has
@@ -67,6 +67,12 @@ export const config = {
   // Only seed/scan filings broadcast within this many days (0 = no age limit).
   // Keeps the AI from spending tokens on stale quarterly filings.
   filingMaxAgeDays: parseInt(process.env.FILING_MAX_AGE_DAYS || '1', 10),
+  // Skip belated/backlog filings whose broadcast date is more than this many
+  // days after the quarter's period-end (0 = no limit). Defaults to ~6 months,
+  // well beyond SEBI's 45-day reporting deadline, so distressed companies
+  // dumping years-old results (e.g. firms under insolvency such as Videocon)
+  // don't surface on the dashboard as if they were fresh quarterly results.
+  filingMaxReportingLagDays: parseInt(process.env.FILING_MAX_REPORTING_LAG_DAYS || '180', 10),
   // Auto-refresh cadence: every 10 minutes by default.
   scanCron: process.env.SCAN_CRON || '*/10 * * * *',
   scanIntervalMs: parseInt(process.env.SCAN_INTERVAL_MS || '600000', 10),

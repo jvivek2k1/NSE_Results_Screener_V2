@@ -9,11 +9,16 @@
     "dev": "node --watch server.js",
     "web": "npm --prefix earnings-intelligence run dev",
     "app": "concurrently -k -n api,web -c green,cyan \"node server.js\" \"npm --prefix earnings-intelligence run dev\"",
+    "build": "npm --prefix earnings-intelligence install --include=dev && npm --prefix earnings-intelligence run build",
     "install:all": "npm install && npm --prefix earnings-intelligence install"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1",
     "adm-zip": "^0.5.17",
+    "applicationinsights": "^3.15.1",
     "axios": "^1.7.2",
     "better-sqlite3": "^11.3.0",
     "cheerio": "^1.0.0",

@@ -159,6 +159,10 @@ async function getLiveFilings(limit) {
   // Skip filings broadcast more than `filingMaxAgeDays` ago (0 = no age limit).
   const minBroadcastMs =
     config.filingMaxAgeDays > 0 ? Date.now() - config.filingMaxAgeDays * 86400000 : null;
+  // Skip belated/backlog filings whose broadcast lags the period-end by more
+  // than `filingMaxReportingLagDays` (0 = no limit).
+  const maxReportingLagMs =
+    config.filingMaxReportingLagDays > 0 ? config.filingMaxReportingLagDays * 86400000 : null;
   // `list` is sorted newest-broadcast-first, so the freshest filings come first.
   for (const it of list) {
     if (out.length >= limit || attempts >= maxAttempts) break;
@@ -169,6 +173,14 @@ async function getLiveFilings(limit) {
       // List is newest-first, so once we pass the age cutoff everything after
       // is older too — stop scanning to avoid crawling stale filings.
       if (Number.isNaN(ts) || ts < minBroadcastMs) break;
+    }
+    if (maxReportingLagMs != null && it.periodEnd && it.broadcastISO) {
+      // Belated filing: a company reporting a quarter long after it ended
+      // (e.g. years-late backlog dumps from firms under insolvency). Skip it
+      // rather than break — the list is ordered by broadcast date, so stale
+      // filings can be interleaved with genuinely fresh ones.
+      const lagMs = new Date(it.broadcastISO).getTime() - new Date(it.periodEnd).getTime();
+      if (lagMs > maxReportingLagMs) continue;
     }
     if (await repo.existsFiling(it.symbol, it.quarter)) continue; // already processed
     seen.add(it.symbol);

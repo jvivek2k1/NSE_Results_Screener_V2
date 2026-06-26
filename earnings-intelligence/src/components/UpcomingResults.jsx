@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CalendarClock } from 'lucide-react';
+import { CalendarClock, CheckCircle2 } from 'lucide-react';
 import { api } from '../api.js';
 
 function formatDate(iso) {
@@ -65,7 +65,15 @@ export default function UpcomingResults({ onSelect }) {
             className="flex w-full items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/60 px-2.5 py-2 text-left hover:border-slate-600"
           >
             <span className="min-w-0 flex-1">
-              <span className="block text-xs font-semibold text-slate-200">{u.ticker}</span>
+              <span className="flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-slate-200">{u.ticker}</span>
+                {u.status === 'published' && (
+                  <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-medium text-emerald-300">
+                    <CheckCircle2 className="h-2.5 w-2.5" />
+                    Published
+                  </span>
+                )}
+              </span>
               <span className="block truncate text-[11px] text-slate-400">{u.company}</span>
               {u.quarter && (
                 <span className="text-[10px] text-slate-500">{u.quarter}</span>
@@ -75,7 +83,9 @@ export default function UpcomingResults({ onSelect }) {
               <span className="block text-xs font-medium text-sky-300 tabular-nums">
                 {formatDate(u.meetingDate)}
               </span>
-              <span className="block text-[10px] text-slate-500">{daysUntil(u.meetingDate)}</span>
+              <span className="block text-[10px] text-slate-500">
+                {u.status === 'published' ? 'results out' : daysUntil(u.meetingDate)}
+              </span>
             </span>
           </button>
         ))}

@@ -92,6 +92,28 @@ CREATE TABLE dbo.jb_Alerts (
     CreatedAt NVARCHAR(40) NULL
 );
 
+/* Forthcoming results: companies that have informed NSE of a board meeting to
+   approve financial results. One row per (Ticker, MeetingDate). Status is
+   'pending' until the actual result is detected on the NSE website, then
+   'published'. */
+IF OBJECT_ID('dbo.jb_UpcomingResults', 'U') IS NULL
+CREATE TABLE dbo.jb_UpcomingResults (
+    Ticker NVARCHAR(32) NOT NULL,
+    CompanyName NVARCHAR(256) NULL,
+    Sector NVARCHAR(128) NULL,
+    MeetingDate NVARCHAR(40) NOT NULL,
+    Quarter NVARCHAR(32) NULL,
+    Purpose NVARCHAR(256) NULL,
+    Status NVARCHAR(32) NOT NULL DEFAULT 'pending',
+    PublishedAt NVARCHAR(40) NULL,
+    FirstSeenAt NVARCHAR(40) NULL,
+    UpdatedAt NVARCHAR(40) NULL,
+    CONSTRAINT jb_PK_UpcomingResults PRIMARY KEY (Ticker, MeetingDate)
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'jb_idx_upcoming_date')
+    CREATE INDEX jb_idx_upcoming_date ON dbo.jb_UpcomingResults (MeetingDate);
+
 
 /* ---------------------------------------------------------------------------
    STEP 2 (ONLY for a hosted app using a managed identity) — skip for local dev.

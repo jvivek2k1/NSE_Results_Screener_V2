@@ -2,14 +2,19 @@
 // Indian Earnings Intelligence — Backend API server
 // Run:  node server.js   (listens on port 3001)
 // ============================================================
+import './src/telemetry.js'; // MUST be first: instruments http/sql/exceptions
 import express from 'express';
 import cors from 'cors';
 import cron from 'node-cron';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { config, hasAzureOpenAI, hasOpenAI, hasEmail } from './src/config.js';
+import { trackError } from './src/telemetry.js';
 import { repo } from './src/db.js';
 import { addClient, broadcast, clientCount } from './src/sse.js';
-import { runScan, getLastScanAt, enrich, backfillHistory } from './src/pipeline.js';
+import { runScan, getLastScanAt, enrich, backfillHistory, purgeStaleFilings } from './src/pipeline.js';
 import { universeSize } from './src/scraper.js';
 import { fetchUpcomingResults } from './src/nse.js';
 import { sendOpenNotification } from './src/mailer.js';
@@ -37,6 +42,8 @@ function parseFloatOr(v, d) {
 function wrap(handler) {
   return (req, res) => {
     Promise.resolve(handler(req, res)).catch((err) => {
+      // Record the handled failure (e.g. Azure SQL unreachable) in App Insights.
+      trackError(err, { route: req.originalUrl, method: req.method, db: getDbStatus()?.state });
       if (res.headersSent) return;
       res.status(503).json({
         error: 'Data store unavailable',
@@ -141,19 +148,37 @@ app.get('/api/alerts', wrap(async (req, res) => {
 }));
 
 // ---------------- Upcoming results (NSE board-meeting calendar) ----------------
+// Served from the data store (populated by the scan pipeline's syncUpcoming).
+// Falls back to a live NSE fetch if the table has not been populated yet.
 let upcomingCache = { at: 0, data: [] };
-app.get('/api/upcoming', async (req, res) => {
+app.get('/api/upcoming', wrap(async (req, res) => {
   const limit = Math.min(parseIntOr(req.query.limit, 10), 50);
+  let rows = [];
   try {
-    // Cache for 10 minutes — NSE's forthcoming-results feed changes slowly.
-    if (Date.now() - upcomingCache.at > 10 * 60 * 1000) {
-      upcomingCache = { at: Date.now(), data: await fetchUpcomingResults() };
-    }
-    res.json(upcomingCache.data.slice(0, limit));
-  } catch (err) {
-    res.status(502).json({ error: 'Could not load upcoming results', detail: err.message });
+    rows = await repo.getUpcoming(limit);
+  } catch {
+    rows = [];
   }
-});
+  if (rows && rows.length > 0) {
+    return res.json(
+      rows.map((r) => ({
+        ticker: r.Ticker,
+        company: r.CompanyName,
+        sector: r.Sector,
+        meetingDate: r.MeetingDate,
+        quarter: r.Quarter,
+        purpose: r.Purpose,
+        status: r.Status,
+        publishedAt: r.PublishedAt,
+      }))
+    );
+  }
+  // Fallback: live NSE fetch (cached 10 min) until the store is seeded.
+  if (Date.now() - upcomingCache.at > 10 * 60 * 1000) {
+    upcomingCache = { at: Date.now(), data: await fetchUpcomingResults() };
+  }
+  res.json(upcomingCache.data.slice(0, limit));
+}));
 
 // ---------------- Email notification on app open ----------------
 app.post('/api/notify-open', async (req, res) => {
@@ -238,11 +263,46 @@ app.get('/api/live', (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
+// Readiness probe: unlike /api/health (liveness), this reflects the data store.
+// Returns 503 when the backing database is unreachable so the App Gateway probe
+// marks the backend Unhealthy and `alert-appgw-unhealthy-backend` fires.
+//
+// A serverless Azure SQL database can briefly enter a transient "connecting"
+// state while it resumes. We treat that as healthy for a short grace window so a
+// normal resume does not flap the gateway backend; only a hard "error" state or
+// a connection that stays stuck "connecting" past the grace window reports 503.
+const READY_CONNECTING_GRACE_MS = 90000;
+app.get('/api/health/ready', (req, res) => {
+  const db = getDbStatus();
+  let ready = !!db?.ok;
+  if (!ready && db?.state === 'connecting') {
+    const sinceMs = db.since ? Date.now() - new Date(db.since).getTime() : 0;
+    ready = sinceMs < READY_CONNECTING_GRACE_MS;
+  }
+  if (ready) {
+    return res.json({ ok: true, db });
+  }
+  return res.status(503).json({ ok: false, db });
+});
+
 app.get('/api/ai-health', (req, res) => res.json(lastAIHealth));
+
+// ---------------- Static frontend (production / single-host deploy) ----------------
+// In production the built React app (earnings-intelligence/dist) is served by
+// this same Express process so the UI and API share one origin (one App
+// Service). All non-/api GET routes fall back to index.html for SPA routing.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const webDist = path.join(__dirname, 'earnings-intelligence', 'dist');
+if (fs.existsSync(webDist)) {
+  app.use(express.static(webDist));
+  app.get(/^(?!\/api\/).*/, (req, res) => res.sendFile(path.join(webDist, 'index.html')));
+  console.log(`[server] serving frontend from ${webDist}`);
+}
 
 // ---------------- Startup ----------------
 async function seedInitialData(iterations = 5) {
   console.log('[server] seeding initial data from NSE...');
+  await purgeStaleFilings(); // drop any previously-stored belated/backlog filings
   for (let i = 0; i < iterations; i++) {
     const r = await runScan();
     if (!r || r.processed === 0) break;

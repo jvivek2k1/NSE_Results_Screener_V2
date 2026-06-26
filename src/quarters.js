@@ -42,3 +42,20 @@ export function currentQuarterIndex(date = new Date()) {
 export function prevQuarterIndex(index, n = 1) {
   return index - n;
 }
+
+// The last calendar day of the fiscal quarter represented by `index`.
+// Q1->Jun 30, Q2->Sep 30, Q3->Dec 31 of the prior calendar year; Q4->Mar 31
+// of the FY-ending year. Returns a UTC Date.
+export function quarterIndexToPeriodEnd(index) {
+  const q = (index % 4) + 1; // 1..4
+  const fy = Math.floor(index / 4); // FY label = ending calendar year
+  // [month index, day] for the quarter end; year offset relative to fy.
+  const ends = [
+    [5, 30, -1], // Q1 -> Jun 30 (fy-1)
+    [8, 30, -1], // Q2 -> Sep 30 (fy-1)
+    [11, 31, -1], // Q3 -> Dec 31 (fy-1)
+    [2, 31, 0], // Q4 -> Mar 31 (fy)
+  ];
+  const [month, day, yearOffset] = ends[q - 1];
+  return new Date(Date.UTC(fy + yearOffset, month, day, 23, 59, 59));
+}

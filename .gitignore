@@ -7,3 +7,10 @@ earnings.db-wal
 earnings.db-shm
 dist/
 .DS_Store
+
+# azd environment (local, per-developer)
+.azure/
+
+# transient diagnostics
+applog/
+applog.zip
