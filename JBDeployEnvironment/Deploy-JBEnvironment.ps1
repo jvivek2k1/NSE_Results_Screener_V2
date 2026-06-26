@@ -156,6 +156,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Ok "Azure Developer CLI authenticated"
 
+# Disable azd's per-invocation update check. Its network call can intermittently
+# hang (e.g. on restricted/proxied networks), which would silently stall the
+# `azd env set` / `azd up` steps below since their output is suppressed.
+azd config set defaults.update-check false 2>$null | Out-Null
+
 # ------------------------------------------------------------------
 # 3. Select subscription.
 # ------------------------------------------------------------------
