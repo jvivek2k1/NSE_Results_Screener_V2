@@ -47,19 +47,22 @@ function Test-RequiredPrivileges {
     # 1) Authoritative: ask ARM whether *I* can create resources and assign roles.
     try {
         $payload = @{
+            Subject = @{ Attributes = @{ ObjectId = $PrincipalId } }
             Actions = @(
                 @{ Id = 'Microsoft.Authorization/roleAssignments/write' },
                 @{ Id = 'Microsoft.Resources/subscriptions/resourceGroups/write' }
             )
-        } | ConvertTo-Json -Depth 5
+        } | ConvertTo-Json -Depth 6
         $tmp = New-TemporaryFile
         Set-Content -Path $tmp.FullName -Value $payload -Encoding utf8
         $uri  = "https://management.azure.com$scope/providers/Microsoft.Authorization/checkAccess?api-version=2018-09-01-preview"
         $resp = az rest --method post --uri $uri --body "@$($tmp.FullName)" --headers "Content-Type=application/json" -o json 2>$null | ConvertFrom-Json
         Remove-Item $tmp.FullName -ErrorAction SilentlyContinue
         $decisions = @()
-        if ($resp.value)               { $decisions = $resp.value }
-        elseif ($resp.accessDecisions) { $decisions = $resp.accessDecisions }
+        if     ($resp -is [System.Array]) { $decisions = $resp }
+        elseif ($resp.value)              { $decisions = $resp.value }
+        elseif ($resp.accessDecisions)    { $decisions = $resp.accessDecisions }
+        elseif ($resp.accessDecision)     { $decisions = @($resp) }
         if ($decisions.Count -gt 0) {
             $denied = $decisions | Where-Object { "$($_.accessDecision)" -ne 'Allowed' }
             if ($denied) { return @{ State = 'denied'; Roles = @() } }
