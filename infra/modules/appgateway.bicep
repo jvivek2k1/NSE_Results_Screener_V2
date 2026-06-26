@@ -158,7 +158,7 @@ resource unhealthyBackendAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
   tags: tags
   properties: {
     description: 'Application Gateway has one or more unhealthy backend hosts.'
-    severity: 2
+    severity: 1
     enabled: true
     scopes: [
       appGateway.id

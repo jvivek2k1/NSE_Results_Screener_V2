@@ -135,7 +135,7 @@ flowchart TD
     DB -->|Yes| R200[/api/health/ready -> 200/]
     R503 --> P[App Gateway probe<br/>interval 30s, unhealthyThreshold 3]
     P -->|3 consecutive fails ~90s| UH[Backend marked Unhealthy<br/>UnhealthyHostCount > 0]
-    UH --> AL[alert-appgw-unhealthy-backend fires<br/>sev2, eval PT1M / window PT5M]
+    UH --> AL[alert-appgw-unhealthy-backend fires<br/>sev1, eval PT1M / window PT5M]
     AL --> AGGRP[Action group ag-aev7ydnz74wgi]
     AL -.read by.-> SRE[Azure SRE Agent]
 ```

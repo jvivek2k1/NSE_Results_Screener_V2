@@ -9,6 +9,51 @@ param resourceToken string
 var appGatewaySubnetName = 'snet-appgw'
 var appSubnetName = 'snet-app'
 
+// NSG for the Application Gateway subnet. App Gateway v2 requires inbound from the
+// Internet (80/443) for client traffic and from the GatewayManager service tag
+// (65200-65535) for control-plane health. The default rules already allow the
+// Azure Load Balancer and intra-VNet traffic. Without the Internet rule, the
+// subnet's default DenyAllInBound blocks all public access (TCP timeouts).
+// Named to match the portal-generated NSG so `azd provision` adopts it.
+resource appGatewayNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
+  name: 'vnet-${resourceToken}-snet-appgw-nsg-${location}'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: [
+      {
+        name: 'AllowInternetHttpInbound'
+        properties: {
+          priority: 1000
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'Internet'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRanges: [
+            '80'
+            '443'
+          ]
+        }
+      }
+      {
+        name: 'AllowGatewayManagerInbound'
+        properties: {
+          priority: 1010
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'GatewayManager'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '65200-65535'
+        }
+      }
+    ]
+  }
+}
+
 resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
   name: 'vnet-${resourceToken}'
   location: location
@@ -24,6 +69,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
         name: appGatewaySubnetName
         properties: {
           addressPrefix: '10.0.1.0/24'
+          networkSecurityGroup: {
+            id: appGatewayNsg.id
+          }
           // Service endpoint so the App Service can restrict inbound traffic
           // to this subnet (the Application Gateway).
           serviceEndpoints: [
