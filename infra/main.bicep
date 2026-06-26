@@ -16,6 +16,9 @@ param environmentName string
 @description('Primary location for all resources.')
 param location string
 
+@description('Location for the Azure AI Services (Foundry) account. Pinned to a\nregion with reliable model capacity; can differ from the primary location.')
+param aiLocation string = 'eastus2'
+
 @description('Existing resource group to deploy into.')
 param resourceGroupName string = 'RG_JB_NSE_RESULTS_SCREENER'
 
@@ -32,13 +35,7 @@ param principalType string = 'User'
 @description('SQL database name.')
 param sqlDatabaseName string = 'JBDB'
 
-@description('Existing Azure OpenAI / Foundry account name (same resource group).')
-param aiAccountName string = 'nse-results-screener-resource'
-
-@description('Azure OpenAI endpoint used by the app.')
-param aiEndpoint string = 'https://nse-results-screener-resource.services.ai.azure.com'
-
-@description('Azure OpenAI deployment (model) name.')
+@description('Azure OpenAI deployment (model) name created on the AI account.')
 param aiDeploymentName string = 'NSE_RESULTS_SCREENER_MODEL'
 
 @description('Azure OpenAI API version.')
@@ -73,6 +70,18 @@ module network 'modules/network.bicep' = {
   }
 }
 
+// -------------------- AI Services (Foundry) account + model deployment --------------------
+module ai 'modules/ai.bicep' = {
+  name: 'ai'
+  scope: rg
+  params: {
+    aiLocation: aiLocation
+    tags: tags
+    resourceToken: resourceToken
+    deploymentName: aiDeploymentName
+  }
+}
+
 // -------------------- Data (SQL Server + Database, Entra-only) --------------------
 module sql 'modules/sql.bicep' = {
   name: 'sql'
@@ -102,18 +111,18 @@ module appService 'modules/appservice.bicep' = {
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     sqlServerFqdn: sql.outputs.sqlServerFqdn
     sqlDatabaseName: sqlDatabaseName
-    aiEndpoint: aiEndpoint
+    aiEndpoint: ai.outputs.aiEndpoint
     aiDeploymentName: aiDeploymentName
     aiApiVersion: aiApiVersion
   }
 }
 
-// -------------------- Grant App MI access to the existing AI resource --------------------
+// -------------------- Grant App MI access to the AI resource --------------------
 module aiAccess 'modules/ai-access.bicep' = {
   name: 'aiAccess'
   scope: rg
   params: {
-    aiAccountName: aiAccountName
+    aiAccountName: ai.outputs.aiAccountName
     principalId: appService.outputs.appPrincipalId
   }
 }
@@ -145,7 +154,7 @@ output SQL_GRANT_DDLADMIN string = 'true'
 
 output AZURE_SQL_SERVER string = sql.outputs.sqlServerFqdn
 output AZURE_SQL_DATABASE string = sqlDatabaseName
-output AZURE_OPENAI_ENDPOINT string = aiEndpoint
+output AZURE_OPENAI_ENDPOINT string = ai.outputs.aiEndpoint
 output AZURE_OPENAI_DEPLOYMENT string = aiDeploymentName
 
 output SERVICE_WEB_NAME string = appService.outputs.appName

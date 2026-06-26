@@ -8,6 +8,9 @@
     "location": {
       "value": "${AZURE_LOCATION}"
     },
+    "aiLocation": {
+      "value": "${AZURE_AI_LOCATION=eastus2}"
+    },
     "resourceGroupName": {
       "value": "${AZURE_RESOURCE_GROUP=RG_JB_NSE_RESULTS_SCREENER}"
     },
@@ -22,12 +25,6 @@
     },
     "sqlDatabaseName": {
       "value": "${SQL_DATABASE=JBDB}"
-    },
-    "aiAccountName": {
-      "value": "${AZURE_OPENAI_ACCOUNT=nse-results-screener-resource}"
-    },
-    "aiEndpoint": {
-      "value": "${AZURE_OPENAI_ENDPOINT=https://nse-results-screener-resource.services.ai.azure.com}"
     },
     "aiDeploymentName": {
       "value": "${AZURE_OPENAI_DEPLOYMENT=NSE_RESULTS_SCREENER_MODEL}"

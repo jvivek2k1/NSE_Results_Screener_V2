@@ -54,6 +54,19 @@ resource appGatewayNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
   }
 }
 
+// NSG for the App Service integration subnet. The subnet is outbound-only
+// (regional VNet integration, delegated to Microsoft.Web/serverFarms); the
+// default rules already permit the required outbound traffic. Declared so the
+// subnet has an explicit, version-controlled NSG (matches the deployed set).
+resource appNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
+  name: 'vnet-${resourceToken}-snet-app-nsg-${location}'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: []
+  }
+}
+
 resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
   name: 'vnet-${resourceToken}'
   location: location
@@ -85,6 +98,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
         name: appSubnetName
         properties: {
           addressPrefix: '10.0.2.0/24'
+          networkSecurityGroup: {
+            id: appNsg.id
+          }
           // Delegated to App Service for regional VNet integration (outbound).
           delegations: [
             {
