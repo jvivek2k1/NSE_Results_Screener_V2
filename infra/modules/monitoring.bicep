@@ -65,7 +65,7 @@ resource dbConnectivityAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01'
     scopes: [
       appInsights.id
     ]
-    evaluationFrequency: 'PT1M'
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     criteria: {
       allOf: [
