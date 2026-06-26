@@ -33,7 +33,14 @@ exact resources that get created, so everything matches with no manual edits.
 | Git | <https://git-scm.com/downloads> &nbsp;or&nbsp; `winget install Git.Git` |
 
 You also need an Azure subscription where you can **create resources** and
-**assign roles** (Owner or Contributor + User Access Administrator).
+**assign roles** — i.e. **Owner**, or **Contributor + User Access Administrator**
+(or *Role Based Access Control Administrator*) at the subscription scope. The
+script verifies this for you and stops early with guidance if your account is not
+entitled, so you never fail halfway through.
+
+> The script also runs a **gpt-4o quota pre-check**. If your chosen AI region
+> (`eastus2` by default) doesn't have capacity, it automatically finds another
+> region that does and deploys the AI resource there — no manual action needed.
 
 ---
 
@@ -108,6 +115,7 @@ az group delete --name <your-resource-group-name> --yes --no-wait
 |---|---|
 | "az / azd / node / git NOT found" | Install the tool (table above), open a **new** PowerShell window, re-run. |
 | "running scripts is disabled on this system" | Run the `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` command in step 2. |
-| AI model quota error during provision | Your subscription may lack gpt-4o capacity in `eastus2`. Re-run with a different AI region: `… -AiLocation eastus` (or request quota). |
+| "Your account does NOT have the permissions required" | Ask your Azure admin to grant **Owner**, or **Contributor + User Access Administrator**, at the subscription scope, then re-run. |
+| AI model quota error during provision | The script auto-checks quota and switches regions; if every region is short, request capacity (<https://aka.ms/oai/quotaincrease>) or re-run with `-AiLocation <region>`. |
 | Region rejected | Use a valid region name (e.g. `eastus2`, `westeurope`). The script lists common ones. |
 | Provisioning fails partway | Fix the reported issue and **re-run the script** — it resumes safely. |

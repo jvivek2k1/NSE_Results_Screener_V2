@@ -37,6 +37,61 @@ function Write-Warn2($msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow 
 function Fail($msg)        { Write-Host "`n[X] $msg" -ForegroundColor Red; exit 1 }
 
 # ------------------------------------------------------------------
+# Helpers: permission + quota pre-flight checks.
+# ------------------------------------------------------------------
+function Test-RequiredPrivileges {
+    param([string] $SubId, [string] $PrincipalId)
+
+    $scope = "/subscriptions/$SubId"
+
+    # 1) Authoritative: ask ARM whether *I* can create resources and assign roles.
+    try {
+        $payload = @{
+            Actions = @(
+                @{ Id = 'Microsoft.Authorization/roleAssignments/write' },
+                @{ Id = 'Microsoft.Resources/subscriptions/resourceGroups/write' }
+            )
+        } | ConvertTo-Json -Depth 5
+        $tmp = New-TemporaryFile
+        Set-Content -Path $tmp.FullName -Value $payload -Encoding utf8
+        $uri  = "https://management.azure.com$scope/providers/Microsoft.Authorization/checkAccess?api-version=2018-09-01-preview"
+        $resp = az rest --method post --uri $uri --body "@$($tmp.FullName)" --headers "Content-Type=application/json" -o json 2>$null | ConvertFrom-Json
+        Remove-Item $tmp.FullName -ErrorAction SilentlyContinue
+        $decisions = @()
+        if ($resp.value)               { $decisions = $resp.value }
+        elseif ($resp.accessDecisions) { $decisions = $resp.accessDecisions }
+        if ($decisions.Count -gt 0) {
+            $denied = $decisions | Where-Object { "$($_.accessDecision)" -ne 'Allowed' }
+            if ($denied) { return @{ State = 'denied'; Roles = @() } }
+            return @{ State = 'allowed'; Roles = @() }
+        }
+    } catch { }
+
+    # 2) Fallback: inspect role assignments (incl. inherited + group-based).
+    $rolesRaw = az role assignment list --assignee $PrincipalId --scope $scope `
+                    --include-inherited --include-groups `
+                    --query "[].roleDefinitionName" -o tsv 2>$null
+    if ($LASTEXITCODE -ne 0) { return @{ State = 'unknown'; Roles = @() } }
+    $roles = @($rolesRaw -split "`r?`n" | Where-Object { $_ })
+    if ($roles.Count -eq 0) { return @{ State = 'unknown'; Roles = @() } }
+
+    $isOwner   = $roles -contains 'Owner'
+    $isContrib = $roles -contains 'Contributor'
+    $canAssign = ($roles -contains 'User Access Administrator') -or ($roles -contains 'Role Based Access Control Administrator')
+    if ($isOwner -or ($isContrib -and $canAssign)) { return @{ State = 'allowed'; Roles = $roles } }
+    return @{ State = 'denied'; Roles = $roles }
+}
+
+function Get-Gpt4oQuotaFree {
+    param([string] $Region)
+    $usages = az cognitiveservices usage list --location $Region -o json 2>$null | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $usages) { return $null }  # unknown / not readable
+    $u = $usages | Where-Object { $_.name.value -eq 'OpenAI.GlobalStandard.gpt-4o' }
+    if (-not $u) { return 0 }
+    return [int][math]::Floor([double]$u.limit - [double]$u.currentValue)
+}
+
+# ------------------------------------------------------------------
 # 0. Locate the repo root (the folder that contains azure.yaml).
 # ------------------------------------------------------------------
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -127,6 +182,45 @@ $sub = az account show -o json | ConvertFrom-Json
 Write-Ok "Subscription: $($sub.name) ($($sub.id))"
 
 # ------------------------------------------------------------------
+# 3b. Verify the signed-in user can create resources AND assign roles.
+# ------------------------------------------------------------------
+Write-Step "Verifying your permissions on this subscription"
+
+$principalId   = az ad signed-in-user show --query id -o tsv
+$principalName = az ad signed-in-user show --query userPrincipalName -o tsv
+if ([string]::IsNullOrWhiteSpace($principalName)) {
+    $principalName = az ad signed-in-user show --query mail -o tsv
+}
+
+$priv = Test-RequiredPrivileges -SubId $SubscriptionId -PrincipalId $principalId
+switch ($priv.State) {
+    'allowed' {
+        Write-Ok "Permission check passed (can create resources and assign roles)"
+    }
+    'denied' {
+        if ($priv.Roles.Count -gt 0) { Write-Warn2 ("Your roles here: {0}" -f ($priv.Roles -join ', ')) }
+        Fail @"
+Your account does NOT have the permissions required to deploy this app on
+subscription '$($sub.name)'.
+
+This deployment must create resources AND assign managed-identity roles
+(for SQL and Azure OpenAI), so your account needs ONE of the following at the
+subscription scope:
+  * Owner, OR
+  * Contributor + User Access Administrator
+    (or Contributor + 'Role Based Access Control Administrator')
+
+Ask your Azure administrator to grant one of the above, then re-run this script.
+"@
+    }
+    default {
+        Write-Warn2 "Could not automatically verify your permissions (directory/API access is limited)."
+        $ans = Read-Host "    Continue anyway? You MUST have Owner, or Contributor + User Access Administrator. [y/N]"
+        if ($ans -notmatch '^(y|yes)$') { Fail "Aborted. Re-run after confirming you have the required permissions." }
+    }
+}
+
+# ------------------------------------------------------------------
 # 4. Prompt for Resource Group name + region.
 # ------------------------------------------------------------------
 Write-Step "Deployment target"
@@ -145,6 +239,53 @@ if (-not $Location) {
 # Validate the region exists.
 $validRegion = az account list-locations --query "[?name=='$Location'] | [0].name" -o tsv
 if (-not $validRegion) { Fail "'$Location' is not a valid Azure region for this subscription." }
+
+# ------------------------------------------------------------------
+# 4b. Ensure gpt-4o (GlobalStandard) quota exists; auto-pick a region if not.
+# ------------------------------------------------------------------
+Write-Step "Checking Azure OpenAI gpt-4o quota"
+$neededCapacity = 10
+$candidateRegions = @($AiLocation) + @(
+    'eastus2','eastus','westus','westus3','northcentralus','southcentralus',
+    'swedencentral','westeurope','francecentral','uksouth','japaneast','australiaeast'
+) | Select-Object -Unique
+
+$chosenAi       = $null
+$primaryUnknown = $false
+foreach ($r in $candidateRegions) {
+    $free = Get-Gpt4oQuotaFree -Region $r
+    if ($null -eq $free) {
+        if ($r -eq $AiLocation) { $primaryUnknown = $true }
+        Write-Warn2 "Could not read gpt-4o quota in '$r' - skipping"
+        continue
+    }
+    if ($free -ge $neededCapacity) {
+        $chosenAi = $r
+        Write-Ok "gpt-4o GlobalStandard quota available in '$r' ($free units free)"
+        break
+    }
+    Write-Warn2 "Insufficient gpt-4o quota in '$r' (only $free of $neededCapacity units free)"
+}
+
+if ($chosenAi) {
+    if ($chosenAi -ne $AiLocation) {
+        Write-Warn2 "Switching AI region from '$AiLocation' to '$chosenAi' (where quota is available)."
+    }
+    $AiLocation = $chosenAi
+}
+elseif ($primaryUnknown) {
+    Write-Warn2 "Could not verify quota in any region; proceeding with '$AiLocation' and letting the deployment validate it."
+}
+else {
+    Fail @"
+No checked region has enough Azure OpenAI 'gpt-4o' (GlobalStandard) quota
+(need $neededCapacity units).
+
+Options:
+  * Request a quota increase:  https://aka.ms/oai/quotaincrease
+  * Re-run choosing a region you know has quota:  -AiLocation <region>
+"@
+}
 
 Write-Ok "Resource Group : $ResourceGroup"
 Write-Ok "App region     : $Location"
@@ -187,11 +328,12 @@ if ($existingEnvs -and ($existingEnvs.Name -contains $envName)) {
     Write-Ok "Created azd environment: $envName"
 }
 
-# Resolve the signed-in principal (set as the Entra SQL admin).
-$principalId   = az ad signed-in-user show --query id -o tsv
-$principalName = az ad signed-in-user show --query userPrincipalName -o tsv
+# Signed-in principal (already resolved during the permission check) is the Entra SQL admin.
+if ([string]::IsNullOrWhiteSpace($principalId)) {
+    $principalId = az ad signed-in-user show --query id -o tsv
+}
 if ([string]::IsNullOrWhiteSpace($principalName)) {
-    $principalName = az ad signed-in-user show --query mail -o tsv
+    $principalName = az ad signed-in-user show --query userPrincipalName -o tsv
 }
 
 azd env set AZURE_SUBSCRIPTION_ID $SubscriptionId   | Out-Null
