@@ -20,7 +20,7 @@
 ### First-look triage (run these first)
 
 ```bash
-# 1. Liveness vs readiness (liveness ignores DB; readiness reflects DB)
+# 1. Liveness vs readiness (liveness ignores deps; readiness reflects DB + AI)
 curl -s -o /dev/null -w "health=%{http_code}\n" http://nse-aev7ydnz74wgi.westus2.cloudapp.azure.com/api/health
 curl -s -w "\nready=%{http_code}\n"            http://nse-aev7ydnz74wgi.westus2.cloudapp.azure.com/api/health/ready
 
@@ -177,8 +177,9 @@ az network application-gateway show-backend-health -g RG_JB_NSE_RESULTS_SCREENER
 
 **Diagnose**
 1. **Most likely a DB outage** (the readiness probe is DB-aware) → go to **Scenario 1**.
-2. **App Service down / not started** → go to **Scenario 4**.
-3. **Probe misconfiguration** — verify it targets `/api/health/ready` over HTTPS:
+2. **AI model unreachable** (readiness is now AI-aware too) → go to **Scenario 3**.
+3. **App Service down / not started** → go to **Scenario 4**.
+4. **Probe misconfiguration** — verify it targets `/api/health/ready` over HTTPS:
    ```bash
    az network application-gateway probe show -g RG_JB_NSE_RESULTS_SCREENER \
      --gateway-name agw-aev7ydnz74wgi -n appServiceHealthProbe \
@@ -198,10 +199,13 @@ az network application-gateway probe update -g RG_JB_NSE_RESULTS_SCREENER \
 
 ---
 
-## Scenario 3 — AI / LLM features failing (data still loads)
+## Scenario 3 — AI / LLM model unreachable (critical dependency)
 
-**Symptoms:** Dashboard data is present, but AI summaries/insights are missing; the AI
-status banner shows degraded; `/api/ai-health` reports not OK.
+**Symptoms:** The AI status banner shows degraded and `/api/ai-health` reports not OK.
+**AI is a critical dependency:** after a short grace window (~120s) of failed AI probes,
+`/api/health/ready` returns **503**, the App Gateway backend goes **Unhealthy**, and both
+`alert-ai-connectivity-loss` and `alert-appgw-unhealthy-backend` fire (502s on all routes).
+Within the grace window, data still serves and only AI enrichment is missing.
 
 **Detect**
 ```bash
@@ -224,8 +228,12 @@ az monitor app-insights query --app $APPID --analytics-query \
 - Quota/throttle: reduce call rate or raise quota in the Foundry resource.
 - Deployment: confirm `AZURE_OPENAI_DEPLOYMENT` matches an existing deployment.
 
-**Note:** AI failures do **not** mark the backend Unhealthy (the readiness probe checks only
-the DB). Data endpoints keep working; only AI enrichment degrades. This is intentional.
+**Note:** AI is a **critical dependency** — once the AI model has been unreachable past the
+~120s grace window, readiness (`/api/health/ready`) returns 503 and the backend goes
+Unhealthy (502s everywhere), so a sustained AI outage is a **full** outage. The grace window
+absorbs single transient probe failures; the local fallback engine and the pre-first-probe
+startup window never block readiness. Quote the AI `error` (e.g. `DeploymentNotFound`, 429,
+401/403) from `/api/ai-health` or App Insights to drive the fix.
 
 ---
 

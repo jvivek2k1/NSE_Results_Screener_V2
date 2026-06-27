@@ -56,6 +56,10 @@ function wrap(handler) {
 
 // Latest AI model connectivity status, refreshed every 60s (see startup).
 let lastAIHealth = { ok: null, provider: aiEngine.provider, model: aiEngine.model, checkedAt: null };
+// Timestamp (ms) of the first failing AI probe in the current outage, or null
+// when AI is healthy/skipped. Drives the readiness grace window so a single
+// transient probe failure does not immediately flap the gateway backend.
+let aiUnhealthySince = null;
 
 // ---------------- Results ----------------
 app.get('/api/results', wrap(async (req, res) => {
@@ -263,26 +267,52 @@ app.get('/api/live', (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
-// Readiness probe: unlike /api/health (liveness), this reflects the data store.
-// Returns 503 when the backing database is unreachable so the App Gateway probe
-// marks the backend Unhealthy and `alert-appgw-unhealthy-backend` fires.
+// Readiness probe: unlike /api/health (liveness), this reflects the critical
+// dependencies the app cannot serve correctly without. Returns 503 when the
+// backing database OR the AI model is unreachable so the App Gateway probe marks
+// the backend Unhealthy and the connectivity alerts fire.
 //
 // A serverless Azure SQL database can briefly enter a transient "connecting"
 // state while it resumes. We treat that as healthy for a short grace window so a
 // normal resume does not flap the gateway backend; only a hard "error" state or
 // a connection that stays stuck "connecting" past the grace window reports 503.
+//
+// The AI model is treated as a critical dependency: once it has been unreachable
+// for longer than READY_AI_GRACE_MS, readiness reports 503. The local engine
+// (no real endpoint to reach) and the pre-first-probe startup window never block
+// readiness.
 const READY_CONNECTING_GRACE_MS = 90000;
+const READY_AI_GRACE_MS = 120000;
+
+function getAiReadiness() {
+  // Local engine or not-yet-probed at startup: never block readiness.
+  if (lastAIHealth.skipped || lastAIHealth.ok === null) return { ready: true };
+  if (lastAIHealth.ok) return { ready: true };
+  // AI is failing — allow a short grace window before failing readiness.
+  const sinceMs = aiUnhealthySince ? Date.now() - aiUnhealthySince : 0;
+  return { ready: sinceMs < READY_AI_GRACE_MS };
+}
+
 app.get('/api/health/ready', (req, res) => {
   const db = getDbStatus();
-  let ready = !!db?.ok;
-  if (!ready && db?.state === 'connecting') {
+  let dbReady = !!db?.ok;
+  if (!dbReady && db?.state === 'connecting') {
     const sinceMs = db.since ? Date.now() - new Date(db.since).getTime() : 0;
-    ready = sinceMs < READY_CONNECTING_GRACE_MS;
+    dbReady = sinceMs < READY_CONNECTING_GRACE_MS;
   }
-  if (ready) {
-    return res.json({ ok: true, db });
+  const aiReady = getAiReadiness().ready;
+  const ai = {
+    ok: lastAIHealth.ok,
+    provider: lastAIHealth.provider,
+    model: lastAIHealth.model,
+    error: lastAIHealth.error,
+    skipped: !!lastAIHealth.skipped,
+    checkedAt: lastAIHealth.checkedAt,
+  };
+  if (dbReady && aiReady) {
+    return res.json({ ok: true, db, ai });
   }
-  return res.status(503).json({ ok: false, db });
+  return res.status(503).json({ ok: false, db, ai });
 });
 
 app.get('/api/ai-health', (req, res) => res.json(lastAIHealth));
@@ -339,14 +369,23 @@ app.listen(config.port, async () => {
   async function runAIHealthCheck() {
     const prevOk = lastAIHealth.ok;
     lastAIHealth = await checkAIHealth();
-    if (lastAIHealth.skipped) return; // local engine: nothing to monitor
-    if (lastAIHealth.ok && prevOk !== true) {
-      console.log(
-        `[ai-health] OK — ${lastAIHealth.provider} model "${lastAIHealth.model}" reachable (${lastAIHealth.latencyMs}ms)`
-      );
-    } else if (!lastAIHealth.ok) {
+    if (lastAIHealth.skipped) {
+      aiUnhealthySince = null;
+      return; // local engine: nothing to monitor
+    }
+    if (lastAIHealth.ok) {
+      aiUnhealthySince = null;
+      if (prevOk !== true) {
+        console.log(
+          `[ai-health] OK — ${lastAIHealth.provider} model "${lastAIHealth.model}" reachable (${lastAIHealth.latencyMs}ms)`
+        );
+      }
+    } else {
+      if (!aiUnhealthySince) aiUnhealthySince = Date.now();
+      const downForMs = Date.now() - aiUnhealthySince;
       console.warn(
-        `[ai-health] FAILED — ${lastAIHealth.provider} model "${lastAIHealth.model}" unreachable: ${lastAIHealth.error}`
+        `[ai-health] FAILED — ${lastAIHealth.provider} model "${lastAIHealth.model}" unreachable for ${Math.round(downForMs / 1000)}s: ${lastAIHealth.error}` +
+          (downForMs >= READY_AI_GRACE_MS ? ' [readiness now 503 - AI is a critical dependency]' : ' [within grace window]')
       );
     }
     broadcast('ai-health', lastAIHealth);

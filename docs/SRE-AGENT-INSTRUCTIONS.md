@@ -64,7 +64,7 @@ _Last refreshed: 2026-06-27T16:58:18Z (from resource group `rg_js_nse_res_27jun2
 
 ## What "healthy" looks like (golden signals)
 - `GET /api/health` → 200 (liveness, no DB).
-- `GET /api/health/ready` → 200 with `db.state == "connected"` (readiness, DB-aware).
+- `GET /api/health/ready` → 200 with `db.state == "connected"` and `ai.ok` true/skipped (readiness, DB- **and** AI-aware).
 - App Gateway backend health = **Healthy**; `UnhealthyHostCount == 0`.
 - App Insights: low/zero `requests` with `success==false`; no `SQL`/AI failed `dependencies`; no `ConnectionError` exceptions.
 - New earnings rows appearing roughly every 10 min (scan cron `*/10 * * * *`).
@@ -72,7 +72,7 @@ _Last refreshed: 2026-06-27T16:58:18Z (from resource group `rg_js_nse_res_27jun2
 ## Standard investigation workflow
 1. **Acknowledge the trigger.** Note which alert/signal fired (most often `alert-appgw-unhealthy-backend`).
 2. **Triage the two health endpoints** (instantly separates DB outage from app-down):
-   - `/api/health` 200 + `/api/health/ready` 503 ⇒ **DB problem** (Scenario 1).
+   - `/api/health` 200 + `/api/health/ready` 503 ⇒ **DB or AI outage** (read `db`/`ai` in the body → Scenario 1 or 3).
    - both fail / 502 everywhere ⇒ **app down or gateway** (Scenario 2/4).
 3. **Check App Gateway backend health** to confirm Healthy/Unhealthy.
 4. **Query App Insights** for the failing dependency/exception in the incident window.
@@ -109,13 +109,13 @@ az monitor app-insights query --app $APPID --analytics-query \
 | `Client with IP ... is not allowed` | SQL firewall missing IP | Add firewall rule (temporary for dev IPs) |
 | `Login failed` / `AADSTS` / token | MI not authorized | Re-run `node ./scripts/grant-sql-access.mjs`; verify role |
 | `paused` / `resuming` / `ETIMEOUT` | Serverless resume (transient) | Usually self-heals; confirm DB not `Paused` |
-| 502 on all routes | DB outage or app down | Scenario 1 or 4 |
-| AI dependency `*.services.ai.azure.com` failing (401/403/429/404) | LLM role/quota/deployment | Scenario 3 (data still serves; AI-only degrade) |
+| 502 on all routes | DB outage, AI outage, or app down | Scenario 1, 3, or 4 |
+| AI dependency to the model failing (401/403/429/404) | LLM role/quota/deployment | Scenario 3 (**critical dep**: readiness 503 after ~120s grace → full outage) |
 | 403 from WAF on numeric host | OWASP rule `920350` | Use FQDN, not IP; do not weaken WAF |
 | Old period + far-future broadcast date | Belated NSE filing | Check/adjust `FILING_MAX_REPORTING_LAG_DAYS` (currently 90); restart purges |
 
 ## Known blind spots & gotchas (important)
-- **AI failures do not mark the backend Unhealthy** — the readiness probe checks only the DB. AI degradation won't trigger `alert-appgw-unhealthy-backend`; detect it via App Insights AI dependencies and `/api/ai-health`.
+- **AI is a critical dependency** — readiness (`/api/health/ready`) returns 503 after the AI model has been unreachable past a ~120s grace window, so a sustained AI outage marks the backend Unhealthy and trips **both** `alert-ai-connectivity-loss` and `alert-appgw-unhealthy-backend` (502s on all routes). Short blips are absorbed by the grace window; the local engine and the pre-first-probe startup window never block readiness. Within the grace window, data still serves and only AI enrichment is missing.
 - **App Insights `-o table` can show empty** even when data exists — use JSON.
 - **`CredentialUnavailableError` / `EnvironmentCredential` exceptions are noise** (normal `DefaultAzureCredential` chain fallthrough) — do not treat as a fault.
 - **Serverless DB resume is transient** — a brief `connecting` state is tolerated by a 90s readiness grace; don't over-react to a single blip. Only sustained failures (~90s+) trip the alert.
