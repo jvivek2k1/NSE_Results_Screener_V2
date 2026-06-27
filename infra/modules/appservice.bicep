@@ -17,6 +17,29 @@ param aiEndpoint string
 param aiDeploymentName string
 param aiApiVersion string
 
+@description('Key Vault name backing the EMAIL_APP_PASSWORD reference.')
+param keyVaultName string = ''
+@description('When "true", email-on-open settings are added to the app.')
+param emailEnabled string = 'false'
+param emailHost string = ''
+param emailPort string = '465'
+param emailUser string = ''
+param emailFrom string = ''
+param emailTo string = ''
+param emailThrottleMinutes string = '10'
+param emailPasswordSecretName string = 'EMAIL-APP-PASSWORD'
+
+var emailOn = toLower(emailEnabled) == 'true'
+var emailAppSettings = emailOn ? [
+  { name: 'EMAIL_HOST', value: emailHost }
+  { name: 'EMAIL_PORT', value: emailPort }
+  { name: 'EMAIL_USER', value: emailUser }
+  { name: 'EMAIL_FROM', value: empty(emailFrom) ? emailUser : emailFrom }
+  { name: 'EMAIL_TO', value: empty(emailTo) ? emailUser : emailTo }
+  { name: 'EMAIL_THROTTLE_MINUTES', value: emailThrottleMinutes }
+  { name: 'EMAIL_APP_PASSWORD', value: '@Microsoft.KeyVault(VaultName=${keyVaultName};SecretName=${emailPasswordSecretName})' }
+] : []
+
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: 'plan-${resourceToken}'
   location: location
@@ -62,7 +85,7 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
       ]
       ipSecurityRestrictionsDefaultAction: 'Deny'
       scmIpSecurityRestrictionsUseMain: false
-      appSettings: [
+      appSettings: concat([
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'true' }
         { name: 'ENABLE_ORYX_BUILD', value: 'true' }
         { name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '600' }
@@ -79,7 +102,7 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'AZURE_OPENAI_API_VERSION', value: aiApiVersion }
         { name: 'AI_READ_PDF', value: 'true' }
         { name: 'FILING_MAX_REPORTING_LAG_DAYS', value: '90' }
-      ]
+      ], emailAppSettings)
     }
   }
 }

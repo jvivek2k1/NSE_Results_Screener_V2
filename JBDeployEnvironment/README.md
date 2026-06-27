@@ -6,7 +6,7 @@ to create anything by hand.
 
 ## What gets created
 
-Running the script provisions all of these (names include a unique token, e.g. `xxxxxxxxxxxxx`):
+Running the script provisions all of these (names include a creation timestamp token `ddMMyyHHmmss`, e.g. `271225143052`):
 
 | Resource | Example name | Purpose |
 |---|---|---|
@@ -17,6 +17,7 @@ Running the script provisions all of these (names include a unique token, e.g. `
 | Virtual Network + 2 NSGs | `vnet-xxxx`, `…-snet-appgw-nsg-…`, `…-snet-app-nsg-…` | Private networking |
 | Azure SQL (serverless) + DB | `sql-xxxx` / `JBDB` | Data store (Entra-only auth) |
 | Azure AI Services (Foundry) + model | `nse-ai-xxxx` / `NSE_RESULTS_SCREENER_MODEL` (gpt-4o) | AI analysis |
+| Key Vault (RBAC) | `kv-xxxx` | Stores the email app password (`EMAIL-APP-PASSWORD`) |
 | Application Insights + Log Analytics | `appi-xxxx`, `log-xxxx` | Telemetry |
 | Action group + 2 alerts | `ag-xxxx`, `alert-appgw-unhealthy-backend`, `alert-db-connectivity-loss` | SRE Agent signals |
 
@@ -69,6 +70,10 @@ entitled, so you never fail halfway through.
    - Pick your **subscription** (if you have more than one).
    - Type a **Resource Group name** (press Enter for the default).
    - Type an **Azure region** (press Enter for `westus2`).
+   - **Email notifications (optional):** answer **y** to enable the "app opened"
+     email, then pick a provider (**Yahoo / Gmail / Outlook-Hotmail / Custom**) and
+     enter the sender address, recipient, and **app password** (input is hidden).
+     Answer **N** (default) to skip — everything else still deploys.
 
 5. **Wait.** Provisioning + first deploy takes about **10–20 minutes**. Leave the
    window open.
@@ -91,6 +96,26 @@ entitled, so you never fail halfway through.
   use the gateway URL.)
 - **SRE Agent demo:** point the Azure SRE Agent at the new resource group. The
   monitoring docs and runbook are in [`docs/`](../docs).
+
+### Email notifications
+
+If you enabled email, the non-secret settings (`EMAIL_HOST`, `EMAIL_PORT`,
+`EMAIL_USER`, `EMAIL_FROM`, `EMAIL_TO`, `EMAIL_THROTTLE_MINUTES`) are stored as App
+Service settings, and the **app password is stored in Key Vault** as the secret
+`EMAIL-APP-PASSWORD`. The web app reads it at runtime via its managed identity
+(`@Microsoft.KeyVault(...)` reference) — the password is **never** placed in
+`.env`, in azd's environment files, or in source control. You provide it **once**;
+because Bicep does not manage the secret value, it survives every re-run.
+
+- **Gmail / Yahoo / Outlook require an _app password_**, not your normal login
+  password (generate one in your mail account's security settings).
+- **To change or set the password later:**
+  ```powershell
+  az keyvault secret set --vault-name <kv-xxxx> --name EMAIL-APP-PASSWORD --value <app-password>
+  az webapp restart --name <app-xxxx> --resource-group <your-resource-group>
+  ```
+  (You need the **Key Vault Secrets Officer** role on the vault — the deploy
+  script grants this to the deploying user automatically.)
 
 ## Re-running / updating
 
@@ -118,4 +143,6 @@ az group delete --name <your-resource-group-name> --yes --no-wait
 | "Your account does NOT have the permissions required" | Ask your Azure admin to grant **Owner**, or **Contributor + User Access Administrator**, at the subscription scope, then re-run. |
 | AI model quota error during provision | The script auto-checks quota and switches regions; if every region is short, request capacity (<https://aka.ms/oai/quotaincrease>) or re-run with `-AiLocation <region>`. |
 | Region rejected | Use a valid region name (e.g. `eastus2`, `westeurope`). The script lists common ones. |
+| Email not sending / "email disabled" in logs | Confirm the `EMAIL-APP-PASSWORD` secret exists in the `kv-xxxx` Key Vault and that you used an **app password** (not your login password). Re-set it with the `az keyvault secret set` command above, then restart the web app. |
+| "Could not write the secret to Key Vault" | The RBAC role was still propagating. Wait a minute, then run the `az keyvault secret set` command shown above (you need **Key Vault Secrets Officer** on the vault). |
 | Provisioning fails partway | Fix the reported issue and **re-run the script** — it resumes safely. |

@@ -31,6 +31,30 @@
     },
     "aiApiVersion": {
       "value": "${AZURE_OPENAI_API_VERSION=preview}"
+    },
+    "emailEnabled": {
+      "value": "${AZURE_EMAIL_ENABLED=false}"
+    },
+    "emailHost": {
+      "value": "${EMAIL_HOST=smtp.mail.yahoo.com}"
+    },
+    "emailPort": {
+      "value": "${EMAIL_PORT=465}"
+    },
+    "emailUser": {
+      "value": "${EMAIL_USER=}"
+    },
+    "emailFrom": {
+      "value": "${EMAIL_FROM=}"
+    },
+    "emailTo": {
+      "value": "${EMAIL_TO=}"
+    },
+    "emailThrottleMinutes": {
+      "value": "${EMAIL_THROTTLE_MINUTES=10}"
+    },
+    "resourceTokenOverride": {
+      "value": "${RESOURCE_TOKEN=}"
     }
   }
 }

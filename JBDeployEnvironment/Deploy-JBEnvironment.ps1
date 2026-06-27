@@ -342,6 +342,24 @@ if ($existingEnvs -and ($existingEnvs.Name -contains $envName)) {
     Write-Ok "Created azd environment: $envName"
 }
 
+# ------------------------------------------------------------------
+# Stable resource-name token: a ddMMyyHHmmss timestamp generated ONCE per
+# environment and reused on every re-run, so azd updates resources in place
+# (a fresh timestamp each run would create duplicate resources). The token is
+# 12 digits — short enough to keep every resource name within Azure limits.
+# ------------------------------------------------------------------
+$existingToken = ''
+$tokenLine = (azd env get-values 2>$null) | Select-String '^RESOURCE_TOKEN='
+if ($tokenLine) { $existingToken = $tokenLine.ToString() -replace '^RESOURCE_TOKEN=', '' -replace '"', '' }
+if ([string]::IsNullOrWhiteSpace($existingToken)) {
+    $resourceToken = Get-Date -Format 'ddMMyyHHmmss'
+    azd env set RESOURCE_TOKEN $resourceToken | Out-Null
+    Write-Ok "Resource-name token: $resourceToken (timestamp ddMMyyHHmmss)"
+} else {
+    $resourceToken = $existingToken
+    Write-Ok "Reusing resource-name token: $resourceToken"
+}
+
 # Signed-in principal (already resolved during the permission check) is the Entra SQL admin.
 if ([string]::IsNullOrWhiteSpace($principalId)) {
     $principalId = az ad signed-in-user show --query id -o tsv
@@ -360,12 +378,126 @@ azd env set AZURE_PRINCIPAL_TYPE  'User'             | Out-Null
 Write-Ok "Environment configured (SQL admin: $principalName)"
 
 # ------------------------------------------------------------------
+# 7b. (Optional) Configure email-on-open notifications.
+#     Non-secret values are stored as azd env vars (-> app settings).
+#     The app PASSWORD is written to Key Vault AFTER provisioning; it is
+#     never stored in .env or in azd's environment files.
+# ------------------------------------------------------------------
+Write-Step "Email notifications (optional)"
+
+$emailEnabled       = $false
+$emailPasswordPlain = $null
+
+$ans = Read-Host "    Enable email-on-open notifications? [y/N]"
+if ($ans -match '^(y|yes)$') {
+    $emailEnabled = $true
+
+    Write-Host ""
+    Write-Host "    Choose your email provider:" -ForegroundColor DarkGray
+    Write-Host "      [1] Yahoo             (smtp.mail.yahoo.com:465)"
+    Write-Host "      [2] Gmail             (smtp.gmail.com:465)"
+    Write-Host "      [3] Outlook/Hotmail   (smtp-mail.outlook.com:587)"
+    Write-Host "      [4] Custom            (enter host + port manually)"
+    $provider = Read-Host "    Provider [1]"
+    if ([string]::IsNullOrWhiteSpace($provider)) { $provider = '1' }
+
+    switch ($provider) {
+        '1' { $emailHost = 'smtp.mail.yahoo.com';   $emailPort = '465' }
+        '2' { $emailHost = 'smtp.gmail.com';        $emailPort = '465' }
+        '3' { $emailHost = 'smtp-mail.outlook.com'; $emailPort = '587' }
+        '4' {
+            $emailHost = Read-Host "    SMTP host (e.g. smtp.example.com)"
+            while ([string]::IsNullOrWhiteSpace($emailHost)) { $emailHost = Read-Host "    SMTP host is required" }
+            $emailPort = Read-Host "    SMTP port [465]"
+            if ([string]::IsNullOrWhiteSpace($emailPort)) { $emailPort = '465' }
+        }
+        default { $emailHost = 'smtp.mail.yahoo.com'; $emailPort = '465' }
+    }
+
+    $emailUser = Read-Host "    Sender email address (SMTP login user)"
+    while ([string]::IsNullOrWhiteSpace($emailUser)) { $emailUser = Read-Host "    Sender email address is required" }
+
+    $emailFrom = Read-Host "    From address [$emailUser]"
+    if ([string]::IsNullOrWhiteSpace($emailFrom)) { $emailFrom = $emailUser }
+
+    $emailTo = Read-Host "    Send notifications to [$emailUser]"
+    if ([string]::IsNullOrWhiteSpace($emailTo)) { $emailTo = $emailUser }
+
+    $emailThrottle = Read-Host "    Minimum minutes between emails [10]"
+    if ([string]::IsNullOrWhiteSpace($emailThrottle)) { $emailThrottle = '10' }
+
+    Write-Host ""
+    Write-Host "    Enter the app password / SMTP password (input is hidden)." -ForegroundColor DarkGray
+    Write-Host "    Note: Gmail/Yahoo/Outlook require an APP PASSWORD, not your normal login password." -ForegroundColor DarkGray
+    do {
+        $securePwd = Read-Host "    App password" -AsSecureString
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePwd)
+        try { $emailPasswordPlain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    } while ([string]::IsNullOrWhiteSpace($emailPasswordPlain))
+
+    azd env set AZURE_EMAIL_ENABLED    'true'         | Out-Null
+    azd env set EMAIL_HOST             $emailHost     | Out-Null
+    azd env set EMAIL_PORT             $emailPort     | Out-Null
+    azd env set EMAIL_USER            $emailUser      | Out-Null
+    azd env set EMAIL_FROM            $emailFrom      | Out-Null
+    azd env set EMAIL_TO              $emailTo        | Out-Null
+    azd env set EMAIL_THROTTLE_MINUTES $emailThrottle | Out-Null
+    Write-Ok "Email configured ($emailUser via ${emailHost}:${emailPort}). Password will be stored in Key Vault."
+}
+else {
+    azd env set AZURE_EMAIL_ENABLED 'false' | Out-Null
+    Write-Ok "Email notifications disabled"
+}
+
+# ------------------------------------------------------------------
 # 8. Provision + deploy.
 # ------------------------------------------------------------------
 Write-Step "Provisioning Azure resources and deploying the app (this can take 10-20 minutes)"
 azd up --no-prompt
 if ($LASTEXITCODE -ne 0) {
     Fail "azd up failed. Scroll up for the error. You can fix the issue and re-run this script (it resumes safely)."
+}
+
+# ------------------------------------------------------------------
+# 8b. Store the email app password in Key Vault (if email enabled).
+# ------------------------------------------------------------------
+if ($emailEnabled -and $emailPasswordPlain) {
+    Write-Step "Storing email app password in Key Vault"
+
+    $envValues = azd env get-values 2>$null
+    $kvName  = ($envValues | Select-String '^KEY_VAULT_NAME=').ToString()  -replace '^KEY_VAULT_NAME=', ''  -replace '"', ''
+    $webName = ($envValues | Select-String '^SERVICE_WEB_NAME=').ToString() -replace '^SERVICE_WEB_NAME=', '' -replace '"', ''
+
+    if ([string]::IsNullOrWhiteSpace($kvName)) {
+        Write-Warn2 "Could not determine the Key Vault name; skipping password storage. You can set it later (see README)."
+    }
+    else {
+        # The 'Key Vault Secrets Officer' role was granted during provisioning;
+        # allow a little time for the RBAC assignment to propagate.
+        $set = $false
+        for ($i = 1; $i -le 10; $i++) {
+            az keyvault secret set --vault-name $kvName --name 'EMAIL-APP-PASSWORD' --value $emailPasswordPlain --only-show-errors 1>$null 2>$null
+            if ($LASTEXITCODE -eq 0) { $set = $true; break }
+            Write-Host "    Waiting for Key Vault permissions to propagate... ($i/10)" -ForegroundColor DarkGray
+            Start-Sleep -Seconds 15
+        }
+
+        if ($set) {
+            Write-Ok "App password stored in Key Vault ($kvName)"
+            if (-not [string]::IsNullOrWhiteSpace($webName)) {
+                az webapp restart --name $webName --resource-group $ResourceGroup --only-show-errors 1>$null 2>$null
+                Write-Ok "Web app restarted to load the secret"
+            }
+        }
+        else {
+            Write-Warn2 "Could not write the secret to Key Vault. Grant yourself 'Key Vault Secrets Officer' on '$kvName', then run:"
+            Write-Warn2 "  az keyvault secret set --vault-name $kvName --name EMAIL-APP-PASSWORD --value <password>"
+        }
+    }
+
+    # Best-effort: drop the plaintext password from memory.
+    $emailPasswordPlain = $null
 }
 
 # ------------------------------------------------------------------

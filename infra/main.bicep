@@ -41,7 +41,20 @@ param aiDeploymentName string = 'NSE_RESULTS_SCREENER_MODEL'
 @description('Azure OpenAI API version.')
 param aiApiVersion string = 'preview'
 
-var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
+@description('When "true", email-on-open notification settings are added to the app.')
+param emailEnabled string = 'false'
+param emailHost string = 'smtp.mail.yahoo.com'
+param emailPort string = '465'
+param emailUser string = ''
+param emailFrom string = ''
+param emailTo string = ''
+param emailThrottleMinutes string = '10'
+
+@description('Optional explicit token used in resource names (e.g. a ddMMyyHHmmss\ntimestamp set by the deploy script). Must be short (<= 12 chars recommended)\nand alphanumeric. When empty, a deterministic hash is used instead.')
+@maxLength(16)
+param resourceTokenOverride string = ''
+
+var resourceToken = empty(resourceTokenOverride) ? toLower(uniqueString(subscription().id, environmentName, location)) : toLower(resourceTokenOverride)
 var tags = { 'azd-env-name': environmentName }
 
 resource rg 'Microsoft.Resources/resourceGroups@2021-04-01' existing = {
@@ -114,6 +127,28 @@ module appService 'modules/appservice.bicep' = {
     aiEndpoint: ai.outputs.aiEndpoint
     aiDeploymentName: aiDeploymentName
     aiApiVersion: aiApiVersion
+    keyVaultName: 'kv-${resourceToken}'
+    emailEnabled: emailEnabled
+    emailHost: emailHost
+    emailPort: emailPort
+    emailUser: emailUser
+    emailFrom: emailFrom
+    emailTo: emailTo
+    emailThrottleMinutes: emailThrottleMinutes
+  }
+}
+
+// -------------------- Key Vault (app secrets, e.g. email app password) --------------------
+module keyVault 'modules/keyvault.bicep' = {
+  name: 'keyVault'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    resourceToken: resourceToken
+    appPrincipalId: appService.outputs.appPrincipalId
+    deployerPrincipalId: principalId
+    deployerPrincipalType: principalType
   }
 }
 
@@ -160,3 +195,4 @@ output AZURE_OPENAI_DEPLOYMENT string = aiDeploymentName
 output SERVICE_WEB_NAME string = appService.outputs.appName
 output SERVICE_WEB_URI string = 'https://${appService.outputs.appHostName}'
 output APPLICATION_GATEWAY_URL string = 'http://${appGateway.outputs.publicIpAddress}'
+output KEY_VAULT_NAME string = keyVault.outputs.keyVaultName
