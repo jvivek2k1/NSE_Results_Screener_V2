@@ -332,7 +332,13 @@ if ($existingEnvs -and ($existingEnvs.Name -contains $envName)) {
     azd env select $envName | Out-Null
     Write-Ok "Reusing existing azd environment: $envName"
 } else {
-    azd env new $envName --subscription $SubscriptionId --location $Location | Out-Null
+    # IMPORTANT: pass --no-prompt so azd never blocks on an interactive prompt.
+    # Without it, azd may prompt to pick a subscription/location, and because the
+    # output is captured the prompt is invisible -> the script appears to hang.
+    azd env new $envName --subscription $SubscriptionId --location $Location --no-prompt
+    if ($LASTEXITCODE -ne 0) {
+        Fail "azd env new failed for '$envName'. Verify the subscription ('$SubscriptionId') and location ('$Location') are valid, then re-run."
+    }
     Write-Ok "Created azd environment: $envName"
 }
 
