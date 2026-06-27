@@ -51,8 +51,10 @@ resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
 // ~1-2 min and carries the exact SQL/connection error text into the alert as a
 // dimension (Detail), so the SRE Agent can root-cause immediately.
 //
-// Matches: ConnectionError exceptions, known SQL failure messages, failed SQL
-// dependencies, and 503s from the DB-aware readiness probe (/api/health/ready).
+// Matches: ConnectionError exceptions, known SQL failure messages, and failed
+// SQL dependencies. (Readiness-probe 503s are intentionally NOT matched: the
+// readiness probe also reflects AI health, so a 503 is ambiguous — AI failures
+// belong to alert-ai-connectivity-loss, not this DB alert.)
 resource dbConnectivityAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
   name: 'alert-db-connectivity-loss'
   location: location
@@ -78,10 +80,7 @@ union
     | extend Detail = outerMessage),
   (dependencies
     | where type == 'SQL' and success == false
-    | extend Detail = strcat(name, ' | ', resultCode)),
-  (requests
-    | where url endswith '/api/health/ready' and toint(resultCode) == 503
-    | extend Detail = '/api/health/ready 503')
+    | extend Detail = strcat(name, ' | ', resultCode))
 | summarize Count = count() by Detail = tostring(Detail)
 '''
           timeAggregation: 'Count'

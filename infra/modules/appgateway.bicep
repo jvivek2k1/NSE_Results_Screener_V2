@@ -83,7 +83,12 @@ resource appGateway 'Microsoft.Network/applicationGateways@2023-11-01' = {
         name: probeName
         properties: {
           protocol: 'Https'
-          path: '/api/health/ready'
+          // Liveness only: probe the app PROCESS, not its dependencies. A DB or
+          // AI outage must NOT mark the backend Unhealthy (that would trip
+          // alert-appgw-unhealthy-backend). Dependency outages are surfaced by
+          // alert-db-connectivity-loss / alert-ai-connectivity-loss instead.
+          // This backend-health alert is reserved for the app being down/unreachable.
+          path: '/api/health'
           interval: 30
           timeout: 30
           unhealthyThreshold: 3
