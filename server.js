@@ -282,7 +282,9 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 // (no real endpoint to reach) and the pre-first-probe startup window never block
 // readiness.
 const READY_CONNECTING_GRACE_MS = 90000;
-const READY_AI_GRACE_MS = 120000;
+// Short grace to ride out a transient AI blip, but fail readiness quickly when
+// the AI dependency is genuinely down so the app is taken out of rotation fast.
+const READY_AI_GRACE_MS = 20000;
 
 function getAiReadiness() {
   // Local engine or not-yet-probed at startup: never block readiness.
