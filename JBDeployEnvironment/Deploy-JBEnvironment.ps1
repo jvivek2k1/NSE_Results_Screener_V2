@@ -507,6 +507,25 @@ Write-Step "Deployment complete"
 $values = azd env get-values 2>$null
 $gwUrl  = ($values | Select-String '^APPLICATION_GATEWAY_URL=').ToString() -replace '^APPLICATION_GATEWAY_URL=', '' -replace '"', ''
 
+# Resolve the public URL of the app (Application Gateway frontend) directly from
+# the resource group's public IP, as a reliable fallback when the azd env var is
+# missing. Uses the resource group this script just deployed to.
+$ipUrl   = $null
+$fqdnUrl = $null
+try {
+    $pip = az network public-ip list -g $ResourceGroup `
+        --query "[?starts_with(name,'pip-')] | [0].{ip:ipAddress, fqdn:dnsSettings.fqdn}" `
+        -o json 2>$null | ConvertFrom-Json
+    if ($pip -and $pip.ip)   { $ipUrl   = "http://$($pip.ip)" }
+    if ($pip -and $pip.fqdn) { $fqdnUrl = "http://$($pip.fqdn)" }
+} catch { }
+
+# Prefer the DNS/FQDN URL, then the gateway env URL, then the raw IP.
+if (-not $gwUrl) {
+    if ($fqdnUrl)   { $gwUrl = $fqdnUrl }
+    elseif ($ipUrl) { $gwUrl = $ipUrl }
+}
+
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host "   SUCCESS - your demo environment is live" -ForegroundColor Green
@@ -516,6 +535,10 @@ Write-Host "   Resource group : $ResourceGroup" -ForegroundColor White
 Write-Host "   Region         : $Location" -ForegroundColor White
 if ($gwUrl) {
     Write-Host "   Public URL     : $gwUrl" -ForegroundColor Yellow
+}
+if ($ipUrl)   { Write-Host "   Public URL (IP)  : $ipUrl"  -ForegroundColor Yellow }
+if ($fqdnUrl) { Write-Host "   Public URL (DNS) : $fqdnUrl" -ForegroundColor Yellow }
+if ($gwUrl -or $ipUrl -or $fqdnUrl) {
     Write-Host ""
     Write-Host "   Open the Public URL in a browser to use the app." -ForegroundColor White
     Write-Host "   (Use this gateway URL - the *.azurewebsites.net URL is blocked by design.)" -ForegroundColor DarkGray
