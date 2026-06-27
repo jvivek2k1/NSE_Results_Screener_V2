@@ -83,12 +83,14 @@ resource appGateway 'Microsoft.Network/applicationGateways@2023-11-01' = {
         name: probeName
         properties: {
           protocol: 'Https'
-          // Liveness only: probe the app PROCESS, not its dependencies. A DB or
-          // AI outage must NOT mark the backend Unhealthy (that would trip
-          // alert-appgw-unhealthy-backend). Dependency outages are surfaced by
-          // alert-db-connectivity-loss / alert-ai-connectivity-loss instead.
-          // This backend-health alert is reserved for the app being down/unreachable.
-          path: '/api/health'
+          // Readiness gate: the probe reflects the app's CRITICAL dependencies
+          // (DB + AI). If either is unreachable, /api/health/ready returns 503,
+          // the backend is marked Unhealthy and the app is taken out of rotation
+          // (502) — a deliberate HARD dependency. The ROOT CAUSE of the outage is
+          // pinpointed by the dedicated log alerts (alert-db-connectivity-loss /
+          // alert-ai-connectivity-loss); this gateway backend-health alert is the
+          // downstream "app is down" impact signal.
+          path: '/api/health/ready'
           interval: 30
           timeout: 30
           unhealthyThreshold: 3
