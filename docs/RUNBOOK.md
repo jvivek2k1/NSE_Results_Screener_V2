@@ -77,10 +77,27 @@ curl -s http://nse-aev7ydnz74wgi.westus2.cloudapp.azure.com/api/health/ready
 | `paused` / `resuming` / `not currently available` | **Serverless resume** (usually transient) | 1d |
 | `ETIMEOUT` / `ESOCKET` only | Network/transient; retry/backoff should recover | 1d |
 
-### 1a. Public network access disabled
+> **Check for a Private Endpoint first (before any public-access / firewall change).**
+> Determine how the app is *meant* to reach SQL. If a private endpoint exists, the
+> app connects over the VNet and **public access being disabled is expected** —
+> re-enabling it is the wrong fix and would mask a broken private link / DNS.
+> ```bash
+> # Private endpoints in the RG that target this SQL server
+> az network private-endpoint list -g RG_JB_NSE_RESULTS_SCREENER \
+>   --query "[?contains(to_string(privateLinkServiceConnections[].privateLinkServiceId),'sql-aev7ydnz74wgi')].{name:name,status:privateLinkServiceConnections[0].privateLinkServiceConnectionState.status}" -o json
+> # And the SQL server's own private endpoint connections
+> az sql server show -g RG_JB_NSE_RESULTS_SCREENER -n sql-aev7ydnz74wgi \
+>   --query "privateEndpointConnections[].properties.privateEndpointConnectionState.status" -o json
+> ```
+> - **Private endpoint present** → do **not** re-enable public access or touch the
+>   firewall. The intended path is the private link — go to **1e**.
+> - **No private endpoint** → public connectivity is the intended path; proceed
+>   with **1a–1d** below.
+
+### 1a. Public network access disabled (only when there is NO private endpoint)
 ```bash
 az sql server show -g RG_JB_NSE_RESULTS_SCREENER -n sql-aev7ydnz74wgi --query publicNetworkAccess -o tsv
-# If "Disabled":
+# If "Disabled" AND no private endpoint exists (see precheck above):
 az sql server update -g RG_JB_NSE_RESULTS_SCREENER -n sql-aev7ydnz74wgi --enable-public-network true
 ```
 Also ensure "Allow Azure services" is on (firewall rule `AllowAllWindowsAzureIps`, start/end `0.0.0.0`):
@@ -115,6 +132,26 @@ az sql server firewall-rule delete -g RG_JB_NSE_RESULTS_SCREENER -s sql-aev7ydnz
   az sql db show -g RG_JB_NSE_RESULTS_SCREENER -s sql-aev7ydnz74wgi -n JBDB --query status -o tsv
   ```
 - If `Paused`, any query resumes it; the 10-min cron normally keeps it warm.
+
+### 1e. Private endpoint present but DB unreachable
+When a private endpoint is in use, connectivity problems are almost always **private
+link / DNS**, not public-access settings. **Do not** enable public network access as a
+workaround — it bypasses the intended secure path and hides the real fault.
+- Confirm the private endpoint connection is approved/healthy:
+  ```bash
+  az sql server show -g RG_JB_NSE_RESULTS_SCREENER -n sql-aev7ydnz74wgi \
+    --query "privateEndpointConnections[].properties.privateEndpointConnectionState" -o json   # expect status: Approved
+  ```
+- Confirm private DNS resolves the SQL FQDN to the **private** IP (not a public one):
+  ```bash
+  az network private-dns record-set a list -g RG_JB_NSE_RESULTS_SCREENER \
+    -z privatelink.database.windows.net -o table
+  ```
+- Ensure the private DNS zone `privatelink.database.windows.net` is **linked to the app's
+  VNet**, the private endpoint NIC has a healthy private IP, and the app subnet's NSG /
+  route table allows egress to it.
+- If the private endpoint is missing/misprovisioned, re-apply infra (`azd provision`) —
+  this is an infra change requiring confirmation, not a quick CLI toggle.
 
 **Remediate** — apply the matching fix above.
 
