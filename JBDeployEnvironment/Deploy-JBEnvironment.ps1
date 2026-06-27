@@ -526,6 +526,18 @@ if (-not $gwUrl) {
     elseif ($ipUrl) { $gwUrl = $ipUrl }
 }
 
+# Refresh the SRE agent instructions doc from the live resource group so its
+# resource names / appId / alerts always match this deployment.
+try {
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $sreScript = Join-Path $repoRoot 'scripts/update-sre-doc.ps1'
+    if (Test-Path $sreScript) {
+        & $sreScript -ResourceGroup $ResourceGroup -SubscriptionId $SubscriptionId
+    }
+} catch {
+    Write-Warn2 "Could not refresh SRE doc: $($_.Exception.Message)"
+}
+
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host "   SUCCESS - your demo environment is live" -ForegroundColor Green

@@ -21,3 +21,14 @@ hooks:
       run: node ./scripts/grant-sql-access.mjs
       interactive: false
       continueOnError: false
+  postdeploy:
+    posix:
+      shell: sh
+      run: pwsh ./scripts/update-sre-doc.ps1 || true
+      interactive: false
+      continueOnError: true
+    windows:
+      shell: pwsh
+      run: ./scripts/update-sre-doc.ps1
+      interactive: false
+      continueOnError: true
