@@ -230,7 +230,7 @@ export default function App() {
       'sql-cpu-100': {
         call: api.chaosSqlCpu100,
         confirm:
-          'Drive Azure SQL CPU to 100%? Untuned report queries will full-scan a large unindexed table in parallel, app responses will degrade, and the SQL CPU alert (>= 85%) will fire. Fix: the SRE Agent adds the missing index.',
+          'Drive Azure SQL CPU to 100%? Untuned report queries will full-scan a large table in parallel, app responses will degrade, and the SQL CPU alert (>= 85%) will fire. The SRE Agent diagnoses and remediates it.',
         title: 'Spiking SQL CPU to 100%',
       },
     }[action];

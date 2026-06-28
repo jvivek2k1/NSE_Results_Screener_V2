@@ -1,14 +1,12 @@
 // ============================================================
 // SRE chaos demo — provision the Azure SQL objects used by the realistic
-// "SQL CPU 100%" scenario: a large dbo.jb_Orders table that is deliberately
-// MISSING the index its reporting queries need, plus dbo.jb_RunSalesReport, an
-// untuned procedure that full-scans the table on every call.
+// "SQL CPU 100%" scenario: a large dbo.jb_Orders table that is deliberately left
+// unoptimized for its reporting queries, plus dbo.jb_RunSalesReport, an untuned
+// procedure that full-scans the table on every call.
 //
-// The incident: running the report in parallel pegs CPU at ~100%.
-// The fix (for the SRE Agent to discover from the plan / Query Store /
-// sys.dm_db_missing_index_details and apply):
-//   CREATE NONCLUSTERED INDEX jb_ix_Orders_Status_Region_Date
-//     ON dbo.jb_Orders (Status, Region, OrderDate) INCLUDE (Amount);
+// The incident: running the report in parallel pegs CPU at ~100%. Diagnosing the
+// root cause and applying the appropriate, reversible remediation is left to the
+// SRE Agent.
 //
 // Runs during `azd provision` (postprovision hook) right after the managed
 // identity has been granted data-plane access. Connects as the signed-in Entra
@@ -104,10 +102,9 @@ BEGIN
   WHILE @i < @Iterations
   BEGIN
     SET @region = CHOOSE((@i % 5) + 1, N'North', N'South', N'East', N'West', N'Central');
-    -- UNTUNED: no index on (Status, Region, OrderDate) -> full clustered scan
-    -- of the multi-million-row dbo.jb_Orders on every pass, plus heavy per-row
-    -- math (SQRT/POWER/LOG) on every surviving row. The missing covering index
-    -- is the fix.
+    -- UNTUNED: full clustered scan of the multi-million-row dbo.jb_Orders on
+    -- every pass, plus heavy per-row math (SQRT/POWER/LOG) on every surviving
+    -- row. Remediation is left to the SRE Agent.
     SELECT @total = SUM(o.Amount
                       * SQRT(POWER(CAST(o.Amount AS FLOAT), 2.0)
                            + POWER(CAST(o.CustomerId AS FLOAT), 2.0))

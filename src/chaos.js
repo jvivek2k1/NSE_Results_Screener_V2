@@ -103,20 +103,16 @@ export async function removeAiModel() {
 
 // -------------------- 3) Drive Azure SQL CPU to 100% (realistic) --------------------
 // This is a real-world "untuned query" incident, not an artificial spin loop.
-// A large dbo.jb_Orders table is created WITHOUT the index its reporting queries
-// need, so dbo.jb_RunSalesReport repeatedly full-scans every row. Running it in
-// parallel saturates the serverless vCores -> CPU ~100% and the app degrades.
+// A large dbo.jb_Orders table is created in a deliberately unoptimized state, so
+// dbo.jb_RunSalesReport repeatedly full-scans every row. Running it in parallel
+// saturates the serverless vCores -> CPU ~100% and the app degrades.
 //
-// The fix the SRE Agent must discover (via the execution plan / Query Store /
-// sys.dm_db_missing_index_details) and apply is the missing covering index:
-//
-//   CREATE NONCLUSTERED INDEX jb_ix_Orders_Status_Region_Date
-//     ON dbo.jb_Orders (Status, Region, OrderDate) INCLUDE (Amount);
-//
-// Once it exists the scans become seeks and CPU drops sharply. (See the
-// "SQL CPU saturation" scenario in docs/RUNBOOK.md.)
+// Diagnosing the root cause and applying the appropriate, reversible remediation
+// is left to the SRE Agent (see the "SQL CPU saturation" scenario in
+// docs/RUNBOOK.md). Once the workload is tuned the scans become cheap and CPU
+// drops on its own.
 // Runs CONTINUOUSLY by default so the spike dwells at ~100% until the SRE Agent
-// remediates the incident (adding the covering index makes the scans cheap, so
+// remediates the incident (once the workload is tuned the scans become cheap, so
 // CPU drops on its own). Set CHAOS_CPU_SECONDS to a positive number to cap the
 // burn at a fixed duration; 0 (the default) means run until stopped/remediated.
 const CPU_BURN_SECONDS = parseInt(process.env.CHAOS_CPU_SECONDS || '0', 10);
@@ -137,8 +133,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Create the orders table (UNINDEXED on the report predicate, on purpose) and
 // the untuned reporting procedure if the deployment script has not already done
-// so. Idempotent. NOTE: this intentionally does NOT create the tuning index —
-// adding that index is the remediation the SRE Agent is expected to figure out.
+// so. Idempotent. NOTE: this intentionally leaves the table in its unoptimized
+// state — the remediation is what the SRE Agent is expected to figure out.
 export async function ensureChaosSchema() {
   await runRawBatch(`
 IF OBJECT_ID('dbo.jb_Orders', 'U') IS NULL
@@ -184,10 +180,9 @@ BEGIN
   BEGIN
     SET @region = CHOOSE((@i % 5) + 1, N'North', N'South', N'East', N'West', N'Central');
     -- "Pending revenue + risk score for a region over the last year." UNTUNED:
-    -- there is no index on (Status, Region, OrderDate), so this full-scans the
-    -- multi-million-row dbo.jb_Orders on every pass AND runs heavy per-row math
-    -- (SQRT/POWER/LOG) on every surviving row. The missing covering index is the
-    -- remediation (see runbook).
+    -- this full-scans the multi-million-row dbo.jb_Orders on every pass AND runs
+    -- heavy per-row math (SQRT/POWER/LOG) on every surviving row. Remediation is
+    -- left to the SRE Agent (see runbook).
     SELECT @total = SUM(o.Amount
                       * SQRT(POWER(CAST(o.Amount AS FLOAT), 2.0)
                            + POWER(CAST(o.CustomerId AS FLOAT), 2.0))
@@ -236,15 +231,15 @@ export async function runSqlCpu100() {
       continuous: CPU_BURN_CONTINUOUS,
       message:
         'SQL CPU burn is already running continuously — Azure SQL CPU stays ' +
-        'pegged at ~100% until remediated (add the missing covering index) or ' +
-        'stopped. Ignoring duplicate request.',
+        'pegged at ~100% until remediated or stopped. Ignoring duplicate ' +
+        'request.',
     };
   }
   burnActive = true;
   // Fire the report workers without awaiting so the HTTP request returns
   // immediately while CPU stays pegged. In continuous mode (default) there is no
-  // deadline: the burn runs until the SRE Agent remediates it (the covering
-  // index makes the scans cheap) or stopSqlCpu100() is called.
+  // deadline: the burn runs until the SRE Agent remediates it (tuning the
+  // workload makes the scans cheap) or stopSqlCpu100() is called.
   const deadline = CPU_BURN_CONTINUOUS ? Infinity : Date.now() + CPU_BURN_SECONDS * 1000;
   for (let i = 0; i < CPU_BURN_PARALLELISM; i++) {
     burnWorker(deadline).catch(() => {});
@@ -261,7 +256,7 @@ export async function runSqlCpu100() {
         ? 'running continuously until remediated. '
         : `for ${CPU_BURN_SECONDS}s. `) +
       'Azure SQL CPU will climb to ~100%, app responses will degrade, and the ' +
-      'SQL CPU alert (>= 85%) will fire. Remediation: add the missing covering ' +
-      'index (see runbook).',
+      'SQL CPU alert (>= 85%) will fire. Diagnosis and remediation are left to ' +
+      'the SRE Agent (see runbook).',
   };
 }

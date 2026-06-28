@@ -1,7 +1,10 @@
 # NSE Results Screener — Troubleshooting Runbook
 
 > Operational runbook for the Azure SRE Agent and human operators.
-> Each scenario lists **Symptoms → Detect (queries) → Diagnose → Remediate → Verify**.
+> Each scenario lists **Symptoms → Detect (gather evidence) → Verify**. It shows how to
+> observe an incident and confirm recovery — it deliberately does **not** prescribe the
+> root cause or the fix. Use the evidence to reach your own diagnosis and apply the
+> narrowest safe, reversible action; escalate anything destructive.
 > See `docs/ARCHITECTURE.md` for component/dependency context.
 
 ## Quick reference
@@ -67,93 +70,13 @@ curl -s http://nse-aev7ydnz74wgi.westus2.cloudapp.azure.com/api/health/ready
 # -> {"ok":false,"db":{"state":"error","error":"...reason...", ...}}
 ```
 
-**Diagnose** — read the `error` string / exception message:
-
-| Error text contains | Root cause | Go to |
-|---|---|---|
-| `Deny Public Network Access is set to Yes` | SQL **Public network access disabled** | 1a |
-| `Client with IP address ... is not allowed` | SQL **firewall** missing the caller IP | 1b |
-| `Login failed` / `token` / `AADSTS` | **Entra auth / managed identity / role** issue | 1c |
-| `paused` / `resuming` / `not currently available` | **Serverless resume** (usually transient) | 1d |
-| `ETIMEOUT` / `ESOCKET` only | Network/transient; retry/backoff should recover | 1d |
-
-> **Check for a Private Endpoint first (before any public-access / firewall change).**
-> Determine how the app is *meant* to reach SQL. If a private endpoint exists, the
-> app connects over the VNet and **public access being disabled is expected** —
-> re-enabling it is the wrong fix and would mask a broken private link / DNS.
-> ```bash
-> # Private endpoints in the RG that target this SQL server
-> az network private-endpoint list -g RG_JB_NSE_RESULTS_SCREENER \
->   --query "[?contains(to_string(privateLinkServiceConnections[].privateLinkServiceId),'sql-aev7ydnz74wgi')].{name:name,status:privateLinkServiceConnections[0].privateLinkServiceConnectionState.status}" -o json
-> # And the SQL server's own private endpoint connections
-> az sql server show -g RG_JB_NSE_RESULTS_SCREENER -n sql-aev7ydnz74wgi \
->   --query "privateEndpointConnections[].properties.privateEndpointConnectionState.status" -o json
-> ```
-> - **Private endpoint present** → do **not** re-enable public access or touch the
->   firewall. The intended path is the private link — go to **1e**.
-> - **No private endpoint** → public connectivity is the intended path; proceed
->   with **1a–1d** below.
-
-### 1a. Public network access disabled (only when there is NO private endpoint)
-```bash
-az sql server show -g RG_JB_NSE_RESULTS_SCREENER -n sql-aev7ydnz74wgi --query publicNetworkAccess -o tsv
-# If "Disabled" AND no private endpoint exists (see precheck above):
-az sql server update -g RG_JB_NSE_RESULTS_SCREENER -n sql-aev7ydnz74wgi --enable-public-network true
-```
-Also ensure "Allow Azure services" is on (firewall rule `AllowAllWindowsAzureIps`, start/end `0.0.0.0`):
-```bash
-az sql server firewall-rule create -g RG_JB_NSE_RESULTS_SCREENER -s sql-aev7ydnz74wgi \
-  -n AllowAllWindowsAzureIps --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0
-```
-
-### 1b. Firewall blocks the caller (usually local dev, not the App Service)
-The App Service egresses as an "Azure service", covered by `AllowAllWindowsAzureIps`. A
-specific blocked IP is typically a developer machine. Add a temporary rule, then remove it:
-```bash
-az sql server firewall-rule create -g RG_JB_NSE_RESULTS_SCREENER -s sql-aev7ydnz74wgi \
-  -n local-dev --start-ip-address <IP> --end-ip-address <IP>
-# cleanup when done:
-az sql server firewall-rule delete -g RG_JB_NSE_RESULTS_SCREENER -s sql-aev7ydnz74wgi -n local-dev
-```
-
-### 1c. Entra auth / managed identity not authorized
-- Confirm the web app has a system-assigned identity and that it is a DB user with rights.
-- Re-grant DB access (idempotent):
-  ```bash
-  node ./scripts/grant-sql-access.mjs
-  ```
-- The DB is **Entra-only** (`azureADOnlyAuthentication: true`) — SQL logins will never work.
-
-### 1d. Serverless resume / transient
-- Usually self-heals within seconds via the app's connect backoff. The readiness endpoint's
-  90s grace prevents flapping. If the DB was paused, the first query resumes it.
-- Confirm the DB isn't paused:
-  ```bash
-  az sql db show -g RG_JB_NSE_RESULTS_SCREENER -s sql-aev7ydnz74wgi -n JBDB --query status -o tsv
-  ```
-- If `Paused`, any query resumes it; the 10-min cron normally keeps it warm.
-
-### 1e. Private endpoint present but DB unreachable
-When a private endpoint is in use, connectivity problems are almost always **private
-link / DNS**, not public-access settings. **Do not** enable public network access as a
-workaround — it bypasses the intended secure path and hides the real fault.
-- Confirm the private endpoint connection is approved/healthy:
-  ```bash
-  az sql server show -g RG_JB_NSE_RESULTS_SCREENER -n sql-aev7ydnz74wgi \
-    --query "privateEndpointConnections[].properties.privateEndpointConnectionState" -o json   # expect status: Approved
-  ```
-- Confirm private DNS resolves the SQL FQDN to the **private** IP (not a public one):
-  ```bash
-  az network private-dns record-set a list -g RG_JB_NSE_RESULTS_SCREENER \
-    -z privatelink.database.windows.net -o table
-  ```
-- Ensure the private DNS zone `privatelink.database.windows.net` is **linked to the app's
-  VNet**, the private endpoint NIC has a healthy private IP, and the app subnet's NSG /
-  route table allows egress to it.
-- If the private endpoint is missing/misprovisioned, re-apply infra (`azd provision`) —
-  this is an infra change requiring confirmation, not a quick CLI toggle.
-
-**Remediate** — apply the matching fix above.
+**Investigate**
+Read the `error` string returned by `/api/health/ready` and the matching
+exception/dependency messages in App Insights, then determine *why* the app cannot
+reach the database. Before changing any setting, confirm how the app is **meant** to
+connect so you don't undo an intentional configuration. Apply the narrowest reversible
+action that restores the intended connectivity; escalate infra-level or destructive
+changes for confirmation.
 
 **Verify**
 ```bash
@@ -175,25 +98,22 @@ The alert auto-mitigates once the backend is Healthy.
 az network application-gateway show-backend-health -g RG_JB_NSE_RESULTS_SCREENER -n agw-aev7ydnz74wgi -o json
 ```
 
-**Diagnose**
-1. **Most likely a DB outage** (the readiness probe is DB-aware) → go to **Scenario 1**.
-2. **AI model unreachable** (readiness is now AI-aware too) → go to **Scenario 3**.
-3. **App Service down / not started** → go to **Scenario 4**.
-4. **Probe misconfiguration** — verify it targets `/api/health/ready` over HTTPS:
+**Investigate** — a 502 / Unhealthy backend almost always points at a downstream
+dependency or a configuration drift rather than the gateway itself. Localise it:
+1. **DB reachability** (readiness is DB-aware) → see **Scenario 1**.
+2. **AI model unreachable** (readiness is AI-aware) → see **Scenario 3**.
+3. **App Service down / not started** → see **Scenario 4**.
+4. **Probe / inbound config** — confirm the gateway probe and the App Service inbound
+   restrictions are still as the platform intends:
    ```bash
    az network application-gateway probe show -g RG_JB_NSE_RESULTS_SCREENER \
      --gateway-name agw-aev7ydnz74wgi -n appServiceHealthProbe \
      --query "{path:path,protocol:protocol,interval:interval,unhealthyThreshold:unhealthyThreshold}" -o json
    ```
-4. **Inbound access restriction** — App Service only accepts traffic from `snet-appgw`.
-   If the gateway can't reach it, confirm the App Service IP restrictions still allow the
-   App Gateway subnet (default action `Deny`).
+   (The App Service only accepts traffic from `snet-appgw`, default action `Deny`.)
 
-**Remediate:** fix the underlying DB/app issue; if the probe drifted, repoint it:
-```bash
-az network application-gateway probe update -g RG_JB_NSE_RESULTS_SCREENER \
-  --gateway-name agw-aev7ydnz74wgi -n appServiceHealthProbe --path /api/health/ready
-```
+Resolve whatever dependency or configuration drift you find with the narrowest
+reversible action.
 
 **Verify:** backend health `Healthy`; gateway serves 200 on `/api/health`.
 
@@ -216,24 +136,16 @@ az monitor app-insights query --app $APPID --analytics-query \
   -o json --query "tables[0].rows"
 ```
 
-**Diagnose**
-- `401/403` → managed identity lost its role on `nse-results-screener-resource`.
-- `429` → model throttling / quota.
-- `404` / `DeploymentNotFound` → deployment `NSE_RESULTS_SCREENER_MODEL` missing/renamed.
-- Timeouts → endpoint/network.
-
-**Remediate**
-- Role: re-grant the app MI the OpenAI user role on the AI account (or re-run `azd provision`,
-  which applies the `ai-access` module).
-- Quota/throttle: reduce call rate or raise quota in the Foundry resource.
-- Deployment: confirm `AZURE_OPENAI_DEPLOYMENT` matches an existing deployment.
+**Investigate** — inspect the failing AI dependency's result code and error text
+(from `/api/ai-health` and App Insights) and work out why the model is unreachable.
+Determine the narrowest reversible remediation from the evidence; escalate quota or
+infra changes for confirmation.
 
 **Note:** AI is a **critical dependency** — once the AI model has been unreachable past the
 ~120s grace window, readiness (`/api/health/ready`) returns 503 and the backend goes
 Unhealthy (502s everywhere), so a sustained AI outage is a **full** outage. The grace window
 absorbs single transient probe failures; the local fallback engine and the pre-first-probe
-startup window never block readiness. Quote the AI `error` (e.g. `DeploymentNotFound`, 429,
-401/403) from `/api/ai-health` or App Insights to drive the fix.
+startup window never block readiness.
 
 ---
 
@@ -255,17 +167,10 @@ Look for the expected healthy startup lines:
 [server] serving frontend from .../earnings-intelligence/dist
 ```
 
-**Diagnose / Remediate**
-- **Missing build output** (`dist/` not present) → ensure the build ran; redeploy with
-  `azd deploy` (Oryx build is enabled via `SCM_DO_BUILD_DURING_DEPLOYMENT=true`).
-- **Module load error** (e.g. missing `applicationinsights`) → check `package.json`
-  dependencies and redeploy.
-- **Crash on startup** unrelated to DB (the app is designed to start and serve even when the
-  DB is down) → read the stack trace in the docker log.
-- **Restart** if needed:
-  ```bash
-  az webapp restart -g RG_JB_NSE_RESULTS_SCREENER -n app-aev7ydnz74wgi
-  ```
+**Investigate** — read the startup / docker logs and identify why the container did not
+come up. The app is designed to start and serve even when the DB is down, so a startup
+failure is usually build- or code-level rather than a dependency outage. Apply the
+narrowest reversible action that gets a healthy process running.
 
 **Verify:** `/api/health` returns 200 through the gateway.
 
@@ -276,16 +181,13 @@ Look for the expected healthy startup lines:
 **Symptoms:** Specific requests return **403** from the WAF, or hitting the app by its raw
 IP returns 403.
 
-**Diagnose**
-- **Numeric Host header** is blocked (OWASP rule `920350`). Always use the FQDN
-  `nse-aev7ydnz74wgi.westus2.cloudapp.azure.com`, not `20.3.118.43`.
-- Legitimate traffic blocked by a managed rule → inspect WAF logs (App Gateway diagnostic
-  logs / `AGWFirewallLogs` in Log Analytics) to find the `ruleId`.
-
-**Remediate**
-- For false positives, add a targeted WAF exclusion/disabled-rule in `waf-aev7ydnz74wgi`
-  (policy is OWASP 3.2, **Prevention** mode). Prefer narrow exclusions over disabling rules.
-- Do **not** weaken the WAF broadly to work around the numeric-host case — fix the caller.
+**Investigate**
+- Accessing the app by its raw IP (numeric Host header) is blocked **by design** — always
+  use the FQDN `nse-aev7ydnz74wgi.westus2.cloudapp.azure.com`, not the IP.
+- For other blocks, inspect the WAF logs (App Gateway diagnostic logs / `AGWFirewallLogs`
+  in Log Analytics) to find the offending request and `ruleId`, then decide on the
+  narrowest change that addresses a genuine false positive. Do **not** weaken the WAF
+  broadly to work around a misbehaving caller.
 
 ---
 
@@ -299,11 +201,9 @@ az monitor app-insights query --app $APPID --analytics-query \
   -o json --query "tables[0].rows"
 ```
 
-**Diagnose:** correlate failed-request spikes with failed `dependencies` (SQL/AI) and
-`exceptions` in the same window. Most 5xx trace back to Scenario 1 (DB) or Scenario 3 (AI).
-
-**Remediate:** address the dominant failing dependency. If CPU/memory bound, consider scaling
-the `plan-aev7ydnz74wgi` (P1v3) up/out.
+**Investigate:** correlate failed-request spikes with failed `dependencies` (SQL/AI) and
+`exceptions` in the same window, identify the dominant contributor, and address it with
+the narrowest reversible action. Escalate capacity/scaling changes for confirmation.
 
 ---
 
@@ -317,23 +217,21 @@ these via `FILING_MAX_REPORTING_LAG_DAYS` (currently **90**): any filing whose b
 lags its period-end by more than N days is **dropped on ingest** and **purged on startup**
 (`purgeStaleFilings()`). "—" growth columns simply mean there is no prior quarter to compare.
 
-**Detect / Remediate**
+**Detect**
 ```bash
-# Confirm the threshold on the running app
+# Inspect the staleness threshold the running app is using
 az webapp config appsettings list -g RG_JB_NSE_RESULTS_SCREENER -n app-aev7ydnz74wgi \
   --query "[?name=='FILING_MAX_REPORTING_LAG_DAYS'].value" -o tsv
-# Tighten/loosen if needed, then restart to re-run the purge
-az webapp config appsettings set -g RG_JB_NSE_RESULTS_SCREENER -n app-aev7ydnz74wgi \
-  --settings FILING_MAX_REPORTING_LAG_DAYS=90
-az webapp restart -g RG_JB_NSE_RESULTS_SCREENER -n app-aev7ydnz74wgi
 ```
-Persist the value in `infra/modules/appservice.bicep` so it survives `azd provision`.
+
+**Investigate:** decide from the data whether the filing is genuinely stale and whether the
+threshold needs adjusting, then apply the narrowest reversible change and re-run the purge.
 
 **Verify:** the stale symbol no longer resolves (e.g. `GET /api/result/<TICKER>` → 404).
 
 ---
 
-## Scenario 8 — Azure SQL CPU saturation (untuned query / missing index)
+## Scenario 8 — Azure SQL CPU saturation
 
 **Symptoms**
 - `alert-sql-cpu-high` fires (SQL database CPU ≥ 85%, severity 1).
@@ -366,46 +264,16 @@ GROUP BY qt.query_sql_text
 ORDER BY total_cpu_ms DESC;
 ```
 
-**Diagnose** — the top query is the unindexed sales report over `dbo.jb_Orders`:
-```sql
-SELECT SUM(o.Amount), COUNT_BIG(*)
-FROM dbo.jb_Orders AS o
-WHERE o.Status = N'PENDING' AND o.Region = @region
-  AND o.OrderDate >= DATEADD(DAY, -90, SYSUTCDATETIME());
-```
-Its plan is a **Clustered Index Scan** of all ~400k rows on every execution. SQL Server's
-own missing-index DMVs confirm the fix and quantify the win:
-```sql
-SELECT mid.statement AS [table],
-       mid.equality_columns, mid.inequality_columns, mid.included_columns,
-       migs.avg_user_impact, migs.user_seeks + migs.user_scans AS hits
-FROM sys.dm_db_missing_index_details mid
-JOIN sys.dm_db_missing_index_groups mig ON mig.index_handle = mid.index_handle
-JOIN sys.dm_db_missing_index_group_stats migs ON migs.group_handle = mig.index_group_handle
-WHERE mid.statement LIKE '%jb_Orders%'
-ORDER BY migs.avg_user_impact DESC;
-```
-
-**Remediate (the tuning fix)** — create the missing covering index so the scans become
-seeks. This is **online**, reversible, and scoped to this app's table:
-```sql
-CREATE NONCLUSTERED INDEX jb_ix_Orders_Status_Region_Date
-  ON dbo.jb_Orders (Status, Region, OrderDate)
-  INCLUDE (Amount)
-  WITH (ONLINE = ON, DATA_COMPRESSION = PAGE);
-```
-> Prefer the index over scaling the database SKU: scaling masks the regression and costs
-> more; the index removes the root cause. Only consider a temporary vCore bump if CPU must
-> be relieved *before* the index build completes.
+**Investigate** — from the top-CPU query identified above, inspect its execution plan and
+SQL Server's own tuning signals (Query Store, `SET STATISTICS IO`, the engine's tuning
+DMVs) to understand *why* it is expensive. Determine the most cost-effective, reversible
+remediation from that evidence and apply the narrowest one — prefer fixing the root cause
+over merely relieving the symptom (e.g. scaling), and escalate any SKU/infra change for
+confirmation.
 
 **Verify**
-- Re-run the top query → plan now shows an **Index Seek** on `jb_ix_Orders_Status_Region_Date`;
-  logical reads and CPU per execution drop by orders of magnitude.
 - `cpu_percent` returns to baseline within a few minutes; `alert-sql-cpu-high` auto-mitigates.
 - Dashboard latency recovers (`/api/health/ready` → 200; p95 back to normal).
-
-> **Reset for a repeat demo:** drop the index to restore the untuned state —
-> `DROP INDEX jb_ix_Orders_Status_Region_Date ON dbo.jb_Orders;`
 
 ---
 
@@ -433,10 +301,11 @@ dependencies
 
 ## Appendix B — Safe-action policy for automated remediation
 
-**Safe / reversible (OK to automate):** read logs and metrics; query App Insights;
-`az webapp restart`; re-enable SQL public network access; add/remove a SQL firewall rule;
-repoint the App Gateway probe; re-run `node ./scripts/grant-sql-access.mjs`; `azd deploy`.
+**Safe / reversible (OK to automate):** read-only investigation (logs, metrics, App
+Insights / Log Analytics queries) and **narrow, reversible** configuration changes that
+return a resource to its intended state. Always prefer the smallest action that restores
+service and be ready to roll it back.
 
-**Require human confirmation:** deleting resources/databases; scaling SKUs; changing WAF
-rules broadly; `azd provision`/`azd up` (infra changes); anything destructive or that
+**Require human confirmation:** deleting resources/databases; scaling SKUs/capacity; broad
+WAF rule changes; `azd provision`/`azd up` (infra changes); anything destructive or that
 affects other workloads. Prefer the narrowest fix that restores service.

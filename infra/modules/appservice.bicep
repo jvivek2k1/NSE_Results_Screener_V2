@@ -120,7 +120,7 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
         // continuously (CHAOS_CPU_SECONDS=0) with enough parallelism to peg the
         // serverless vCores while leaving pool connections free for the app's
         // own health/data queries. CPU stays at ~100% until the SRE Agent
-        // remediates it (adding the covering index makes the scans cheap).
+        // diagnoses and remediates it (tuning the workload makes the scans cheap).
         { name: 'CHAOS_CPU_SECONDS', value: '0' }
         { name: 'CHAOS_CPU_PARALLELISM', value: '4' }
         { name: 'CHAOS_CPU_ITERATIONS', value: '50' }
