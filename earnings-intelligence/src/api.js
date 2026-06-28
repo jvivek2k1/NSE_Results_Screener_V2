@@ -43,4 +43,8 @@ export const api = {
   removeWatch: (ticker) => send('DELETE', `/watchlist/${ticker}`),
   pinWatch: (ticker) => send('POST', `/watchlist/${ticker}/pin`),
   scan: () => send('POST', '/scan'),
+  // SRE chaos demo actions
+  chaosDisableSqlPublicAccess: () => send('POST', '/chaos/disable-sql-public-access'),
+  chaosRemoveAiModel: () => send('POST', '/chaos/remove-ai-model'),
+  chaosSqlCpu100: () => send('POST', '/chaos/sql-cpu-100'),
 };

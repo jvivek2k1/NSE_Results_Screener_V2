@@ -13,12 +13,12 @@ hooks:
   postprovision:
     posix:
       shell: sh
-      run: node ./scripts/grant-sql-access.mjs
+      run: node ./scripts/grant-sql-access.mjs && node ./scripts/setup-chaos-sql.mjs
       interactive: false
       continueOnError: false
     windows:
       shell: pwsh
-      run: node ./scripts/grant-sql-access.mjs
+      run: node ./scripts/grant-sql-access.mjs; node ./scripts/setup-chaos-sql.mjs
       interactive: false
       continueOnError: false
   postdeploy:

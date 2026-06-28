@@ -17,6 +17,15 @@ param aiEndpoint string
 param aiDeploymentName string
 param aiApiVersion string
 
+@description('Subscription ID — used by the SRE chaos demo (management plane).')
+param subscriptionId string = ''
+@description('Resource group name — used by the SRE chaos demo (management plane).')
+param resourceGroupName string = ''
+@description('SQL logical server short name — used by the SRE chaos demo.')
+param sqlServerName string = ''
+@description('Azure AI Services account short name — used by the SRE chaos demo.')
+param aiAccountName string = ''
+
 @description('Key Vault name backing the EMAIL_APP_PASSWORD reference.')
 param keyVaultName string = ''
 @description('When "true", email-on-open settings are added to the app.')
@@ -102,6 +111,11 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'AZURE_OPENAI_API_VERSION', value: aiApiVersion }
         { name: 'AI_READ_PDF', value: 'true' }
         { name: 'FILING_MAX_REPORTING_LAG_DAYS', value: '90' }
+        // SRE chaos demo — Azure resource coordinates for management-plane actions.
+        { name: 'AZURE_SUBSCRIPTION_ID', value: subscriptionId }
+        { name: 'AZURE_RESOURCE_GROUP', value: resourceGroupName }
+        { name: 'AZURE_SQL_SERVER_NAME', value: sqlServerName }
+        { name: 'AZURE_AI_ACCOUNT_NAME', value: aiAccountName }
       ], emailAppSettings)
     }
   }

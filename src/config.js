@@ -85,6 +85,19 @@ export const config = {
   emailTo: process.env.EMAIL_TO || process.env.EMAIL_USER || '',
   // Throttle: don't send more than one "opened" email per this many minutes.
   emailThrottleMinutes: parseInt(process.env.EMAIL_THROTTLE_MINUTES || '10', 10),
+  // -------------------- SRE chaos demo (management-plane actions) --------------------
+  // Azure resource coordinates used by the SRE demo menu to (a) disable Azure
+  // SQL public network access, (b) delete the AI model deployment, and (c)
+  // drive Azure SQL CPU to 100%. Populated as App Service settings by Bicep.
+  azureSubscriptionId: process.env.AZURE_SUBSCRIPTION_ID || '',
+  azureResourceGroup: process.env.AZURE_RESOURCE_GROUP || '',
+  // Short SQL server name (no domain). Falls back to deriving it from the FQDN.
+  azureSqlServerName:
+    process.env.AZURE_SQL_SERVER_NAME ||
+    (process.env.AZURE_SQL_SERVER || '').split('.')[0] ||
+    '',
+  // Azure AI Services (Foundry) account short name hosting the model deployment.
+  azureAiAccountName: process.env.AZURE_AI_ACCOUNT_NAME || '',
   rootDir,
 };
 

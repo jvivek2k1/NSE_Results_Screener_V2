@@ -110,6 +110,7 @@ az monitor app-insights query --app $APPID --analytics-query \
 | `Login failed` / `AADSTS` / token | MI not authorized | Re-run `node ./scripts/grant-sql-access.mjs`; verify role |
 | `paused` / `resuming` / `ETIMEOUT` | Serverless resume (transient) | Usually self-heals; confirm DB not `Paused` |
 | 502 on all routes | DB outage, AI outage, or app down | Scenario 1, 3, or 4 |
+| `alert-sql-cpu-high` + slow (not failing) SQL dependencies | Untuned query full-scanning `dbo.jb_Orders` (missing index) | **Add the missing covering index** (runbook Scenario 8) — prefer over scaling the SKU |
 | AI dependency to the model failing (401/403/429/404) | LLM role/quota/deployment | Scenario 3 (**critical dep**: readiness 503 after ~120s grace → full outage) |
 | 403 from WAF on numeric host | OWASP rule `920350` | Use FQDN, not IP; do not weaken WAF |
 | Old period + far-future broadcast date | Belated NSE filing | Check/adjust `FILING_MAX_REPORTING_LAG_DAYS` (currently 90); restart purges |
@@ -125,7 +126,8 @@ az monitor app-insights query --app $APPID --analytics-query \
 **Safe / auto-approved (reversible):** read logs & metrics; query App Insights/Log Analytics;
 `az webapp restart`; re-enable SQL public network access; add/remove a single SQL firewall
 rule; repoint the App Gateway probe to `/api/health/ready`; re-run
-`node ./scripts/grant-sql-access.mjs`; `azd deploy` (code only).
+`node ./scripts/grant-sql-access.mjs`; create a missing **nonclustered index** to fix an
+untuned-query CPU spike (online, reversible — runbook Scenario 8); `azd deploy` (code only).
 
 **Requires human approval (do not auto-execute):** deleting any resource/database; scaling
 SKUs; broad WAF rule changes; `azd provision` / `azd up` (infra changes); network/identity

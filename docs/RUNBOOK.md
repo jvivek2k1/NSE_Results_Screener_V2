@@ -333,6 +333,82 @@ Persist the value in `infra/modules/appservice.bicep` so it survives `azd provis
 
 ---
 
+## Scenario 8 — Azure SQL CPU saturation (untuned query / missing index)
+
+**Symptoms**
+- `alert-sql-cpu-high` fires (SQL database CPU ≥ 85%, severity 1).
+- Dashboard is slow or times out; data endpoints (`/api/results`, `/api/stats`, …) are
+  sluggish or return **503/504**; the app may flap Unhealthy under sustained load.
+- App Insights shows **SQL dependencies with high `duration`** (not failures) and rising
+  request latency — a performance incident, **not** a connectivity outage (Scenario 1).
+
+**Detect**
+```bash
+RG=RG_JB_NSE_RESULTS_SCREENER; SQL=sql-aev7ydnz74wgi; DB=JBDB
+# Confirm the CPU spike on the database
+az monitor metrics list --resource \
+  "/subscriptions/<sub>/resourceGroups/$RG/providers/Microsoft.Sql/servers/$SQL/databases/$DB" \
+  --metric cpu_percent --interval PT1M --aggregation Average -o table
+```
+Find the top-CPU query (run against `JBDB` with Entra auth — sqlcmd `-G`, ADS, or the portal Query editor):
+```sql
+-- Top CPU consumers from Query Store (last hour)
+SELECT TOP 10 qt.query_sql_text,
+       SUM(rs.count_executions)                       AS execs,
+       SUM(rs.avg_cpu_time * rs.count_executions)/1000 AS total_cpu_ms
+FROM sys.query_store_query_text qt
+JOIN sys.query_store_query q   ON q.query_text_id = qt.query_text_id
+JOIN sys.query_store_plan p    ON p.query_id = q.query_id
+JOIN sys.query_store_runtime_stats rs ON rs.plan_id = p.plan_id
+JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id = rs.runtime_stats_interval_id
+WHERE i.start_time > DATEADD(HOUR, -1, SYSUTCDATETIME())
+GROUP BY qt.query_sql_text
+ORDER BY total_cpu_ms DESC;
+```
+
+**Diagnose** — the top query is the unindexed sales report over `dbo.jb_Orders`:
+```sql
+SELECT SUM(o.Amount), COUNT_BIG(*)
+FROM dbo.jb_Orders AS o
+WHERE o.Status = N'PENDING' AND o.Region = @region
+  AND o.OrderDate >= DATEADD(DAY, -90, SYSUTCDATETIME());
+```
+Its plan is a **Clustered Index Scan** of all ~400k rows on every execution. SQL Server's
+own missing-index DMVs confirm the fix and quantify the win:
+```sql
+SELECT mid.statement AS [table],
+       mid.equality_columns, mid.inequality_columns, mid.included_columns,
+       migs.avg_user_impact, migs.user_seeks + migs.user_scans AS hits
+FROM sys.dm_db_missing_index_details mid
+JOIN sys.dm_db_missing_index_groups mig ON mig.index_handle = mid.index_handle
+JOIN sys.dm_db_missing_index_group_stats migs ON migs.group_handle = mig.index_group_handle
+WHERE mid.statement LIKE '%jb_Orders%'
+ORDER BY migs.avg_user_impact DESC;
+```
+
+**Remediate (the tuning fix)** — create the missing covering index so the scans become
+seeks. This is **online**, reversible, and scoped to this app's table:
+```sql
+CREATE NONCLUSTERED INDEX jb_ix_Orders_Status_Region_Date
+  ON dbo.jb_Orders (Status, Region, OrderDate)
+  INCLUDE (Amount)
+  WITH (ONLINE = ON, DATA_COMPRESSION = PAGE);
+```
+> Prefer the index over scaling the database SKU: scaling masks the regression and costs
+> more; the index removes the root cause. Only consider a temporary vCore bump if CPU must
+> be relieved *before* the index build completes.
+
+**Verify**
+- Re-run the top query → plan now shows an **Index Seek** on `jb_ix_Orders_Status_Region_Date`;
+  logical reads and CPU per execution drop by orders of magnitude.
+- `cpu_percent` returns to baseline within a few minutes; `alert-sql-cpu-high` auto-mitigates.
+- Dashboard latency recovers (`/api/health/ready` → 200; p95 back to normal).
+
+> **Reset for a repeat demo:** drop the index to restore the untuned state —
+> `DROP INDEX jb_ix_Orders_Status_Region_Date ON dbo.jb_Orders;`
+
+---
+
 ## Appendix A — Useful App Insights queries (Portal → Logs)
 
 ```kql

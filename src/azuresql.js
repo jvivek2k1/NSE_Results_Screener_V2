@@ -190,6 +190,14 @@ async function query(build) {
   throw lastErr;
 }
 
+// Exposed for the SRE chaos demo: run an arbitrary T-SQL batch on the shared
+// connection pool (used to create the CPU-load objects and to execute the
+// CPU-burning stored procedure during the "SQL CPU 100%" scenario). Reuses the
+// same reconnect-on-drop behaviour as every other query in this module.
+export async function runRawBatch(batchText) {
+  return query((request) => request.batch(batchText));
+}
+
 // -------------------- Schema --------------------
 // All app-owned database objects are prefixed with `jb_` so they are easy to
 // identify alongside other objects in the shared JBDB database.

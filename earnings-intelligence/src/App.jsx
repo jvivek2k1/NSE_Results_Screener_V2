@@ -211,6 +211,42 @@ export default function App() {
     loadWatchlist();
   };
 
+  // ---- SRE chaos demo ----
+  const [chaosBusy, setChaosBusy] = useState(false);
+  const handleChaos = async (action) => {
+    const spec = {
+      'disable-sql-public-access': {
+        call: api.chaosDisableSqlPublicAccess,
+        confirm:
+          'Disable Azure SQL public network access? The app will lose its database connection and the db-connectivity alert will fire.',
+        title: 'Disabling SQL public access',
+      },
+      'remove-ai-model': {
+        call: api.chaosRemoveAiModel,
+        confirm:
+          'Remove the AI model deployment? AI calls will start failing and the ai-connectivity alert will fire.',
+        title: 'Removing AI model',
+      },
+      'sql-cpu-100': {
+        call: api.chaosSqlCpu100,
+        confirm:
+          'Drive Azure SQL CPU to 100%? Untuned report queries will full-scan a large unindexed table in parallel, app responses will degrade, and the SQL CPU alert (>= 85%) will fire. Fix: the SRE Agent adds the missing index.',
+        title: 'Spiking SQL CPU to 100%',
+      },
+    }[action];
+    if (!spec) return;
+    if (!window.confirm(spec.confirm)) return;
+    setChaosBusy(true);
+    try {
+      const res = await spec.call();
+      pushToast({ title: spec.title, body: res?.message || 'Action triggered.' });
+    } catch (err) {
+      pushToast({ title: `${spec.title} — failed`, body: err?.message || 'Request failed.' });
+    } finally {
+      setChaosBusy(false);
+    }
+  };
+
   const exportAllCSV = () => {
     const header = [
       'Ticker', 'Company', 'Sector', 'Quarter', 'Revenue', 'EBITDA', 'PAT', 'EPS',
@@ -239,6 +275,8 @@ export default function App() {
         totalCompanies={meta?.companiesProcessed ?? stats?.companiesProcessed}
         onScan={handleScan}
         scanning={scanning}
+        onChaos={handleChaos}
+        chaosBusy={chaosBusy}
       />
 
       <DbStatusBanner dbStatus={dbStatus} />

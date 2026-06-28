@@ -107,6 +107,7 @@ module sql 'modules/sql.bicep' = {
     principalId: principalId
     principalName: principalName
     principalType: principalType
+    actionGroupId: monitoring.outputs.actionGroupId
   }
 }
 
@@ -128,6 +129,10 @@ module appService 'modules/appservice.bicep' = {
     aiDeploymentName: aiDeploymentName
     aiApiVersion: aiApiVersion
     keyVaultName: 'kv-${resourceToken}'
+    subscriptionId: subscription().subscriptionId
+    resourceGroupName: rg.name
+    sqlServerName: sql.outputs.sqlServerName
+    aiAccountName: ai.outputs.aiAccountName
     emailEnabled: emailEnabled
     emailHost: emailHost
     emailPort: emailPort
@@ -157,6 +162,17 @@ module aiAccess 'modules/ai-access.bicep' = {
   name: 'aiAccess'
   scope: rg
   params: {
+    aiAccountName: ai.outputs.aiAccountName
+    principalId: appService.outputs.appPrincipalId
+  }
+}
+
+// -------------------- Grant App MI management roles for the SRE chaos demo --------------------
+module chaosAccess 'modules/chaos-access.bicep' = {
+  name: 'chaosAccess'
+  scope: rg
+  params: {
+    sqlServerName: sql.outputs.sqlServerName
     aiAccountName: ai.outputs.aiAccountName
     principalId: appService.outputs.appPrincipalId
   }

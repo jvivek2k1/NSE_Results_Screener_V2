@@ -20,7 +20,7 @@ import { fetchUpcomingResults } from './src/nse.js';
 import { sendOpenNotification } from './src/mailer.js';
 import { checkAIHealth, aiEngine } from './src/ai.js';
 import { getDbStatus } from './src/db.js';
-
+import { disableSqlPublicAccess, removeAiModel, runSqlCpu100 } from './src/chaos.js';
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -236,6 +236,39 @@ app.get('/api/meta', wrap(async (req, res) => {
 app.post('/api/scan', async (req, res) => {
   const result = await runScan();
   res.json(result);
+});
+
+// ---------------- SRE chaos demo (fault injection) ----------------
+// Three deliberate fault-injection actions exposed via the dashboard "SRE Demo"
+// menu, used to demonstrate how the SRE Agent detects and remediates incidents.
+app.post('/api/chaos/disable-sql-public-access', async (req, res) => {
+  try {
+    const result = await disableSqlPublicAccess();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    trackError(err, { chaos: 'disable-sql-public-access' });
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/chaos/remove-ai-model', async (req, res) => {
+  try {
+    const result = await removeAiModel();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    trackError(err, { chaos: 'remove-ai-model' });
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/chaos/sql-cpu-100', async (req, res) => {
+  try {
+    const result = await runSqlCpu100();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    trackError(err, { chaos: 'sql-cpu-100' });
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ---------------- SSE live stream ----------------

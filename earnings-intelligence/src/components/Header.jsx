@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, RefreshCw, Building2, Clock } from 'lucide-react';
+import { Activity, RefreshCw, Building2, Clock, ShieldAlert, Database, BrainCircuit, Cpu, ChevronDown } from 'lucide-react';
 
 // Returns the wall-clock time (HH:MM:SS) of the next scheduled scan, rolling
 // forward whenever the previous target passes so it never gets stuck on "now".
@@ -29,7 +29,7 @@ function useNextScan(lastScanAt, intervalMs = 600000) {
   return label;
 }
 
-export default function Header({ meta, connected, totalCompanies, onScan, scanning }) {
+export default function Header({ meta, connected, totalCompanies, onScan, scanning, onChaos, chaosBusy }) {
   const nextScan = useNextScan(meta?.lastScanAt, meta?.scanIntervalMs);
   const lastRefresh = meta?.lastScanAt
     ? new Date(meta.lastScanAt).toLocaleTimeString('en-IN')
@@ -91,9 +91,82 @@ export default function Header({ meta, connected, totalCompanies, onScan, scanni
             <RefreshCw className={`h-3.5 w-3.5 ${scanning ? 'animate-spin' : ''}`} />
             Scan Now
           </button>
+
+          <SreMenu onChaos={onChaos} busy={chaosBusy} />
         </div>
       </div>
     </header>
+  );
+}
+
+function SreMenu({ onChaos, busy }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [open]);
+
+  const items = [
+    {
+      key: 'disable-sql-public-access',
+      label: 'Disable SQL Public Access',
+      desc: 'Block Azure SQL public network access',
+      icon: Database,
+    },
+    {
+      key: 'remove-ai-model',
+      label: 'Remove AI Model',
+      desc: 'Delete the AI model deployment',
+      icon: BrainCircuit,
+    },
+    {
+      key: 'sql-cpu-100',
+      label: 'SQL CPU 100%',
+      desc: 'Untuned queries scan an unindexed table',
+      icon: Cpu,
+    },
+  ];
+
+  return (
+    <div className="relative" onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        disabled={busy}
+        title="Inject a fault for the SRE Agent demo"
+        className="flex items-center gap-2 rounded-md bg-rose-600 hover:bg-rose-500 disabled:opacity-50 px-3 py-1.5 text-xs font-semibold text-white transition"
+      >
+        <ShieldAlert className="h-3.5 w-3.5" />
+        SRE Demo
+        <ChevronDown className={`h-3.5 w-3.5 transition ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 mt-2 w-72 rounded-lg border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-40">
+          <div className="px-3 py-2 text-[10px] uppercase tracking-wide text-slate-500 border-b border-slate-700">
+            Fault injection
+          </div>
+          {items.map((item) => (
+            <button
+              key={item.key}
+              onClick={() => {
+                setOpen(false);
+                onChaos(item.key);
+              }}
+              className="flex w-full items-start gap-3 px-3 py-2.5 text-left hover:bg-slate-700/60 transition"
+            >
+              <item.icon className="h-4 w-4 mt-0.5 text-rose-400 shrink-0" />
+              <span className="leading-tight">
+                <span className="block text-sm font-medium text-slate-100">{item.label}</span>
+                <span className="block text-xs text-slate-400">{item.desc}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
