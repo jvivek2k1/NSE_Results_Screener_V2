@@ -115,9 +115,12 @@ export async function removeAiModel() {
 //
 // Once it exists the scans become seeks and CPU drops sharply. (See the
 // "SQL CPU saturation" scenario in docs/RUNBOOK.md.)
-// Default 15 minutes so the spike is clearly visible (and dwells at ~100%) in
-// the Azure SQL CPU metric charts, which aggregate on 1-minute grains.
-const CPU_BURN_SECONDS = parseInt(process.env.CHAOS_CPU_SECONDS || '900', 10);
+// Runs CONTINUOUSLY by default so the spike dwells at ~100% until the SRE Agent
+// remediates the incident (adding the covering index makes the scans cheap, so
+// CPU drops on its own). Set CHAOS_CPU_SECONDS to a positive number to cap the
+// burn at a fixed duration; 0 (the default) means run until stopped/remediated.
+const CPU_BURN_SECONDS = parseInt(process.env.CHAOS_CPU_SECONDS || '0', 10);
+const CPU_BURN_CONTINUOUS = CPU_BURN_SECONDS <= 0;
 // 4 concurrent untuned full-scans saturate the 2-vCore serverless DB while
 // leaving pool connections free for the app (pool max is 10), so the app stays
 // up and the spike shows cleanly in DB metrics rather than knocking it offline.
@@ -200,9 +203,14 @@ END
 `);
 }
 
-// One worker: keep running the untuned report until the deadline passes.
+// One worker: keep running the untuned report until the deadline passes
+// (or forever, in continuous mode, until burnActive is cleared).
+// Tracks whether a burn is already in flight so repeated "SQL CPU 100%" clicks
+// don't stack extra worker pools on top of each other.
+let burnActive = false;
+
 async function burnWorker(deadline) {
-  while (Date.now() < deadline) {
+  while (burnActive && (deadline === Infinity || Date.now() < deadline)) {
     try {
       await runRawBatch(`EXEC dbo.jb_RunSalesReport @Iterations = ${CPU_REPORT_ITERATIONS};`);
     } catch {
@@ -213,22 +221,47 @@ async function burnWorker(deadline) {
   }
 }
 
+// Stop an in-flight continuous burn (workers exit on their next loop check).
+export function stopSqlCpu100() {
+  burnActive = false;
+  return { action: 'sql-cpu-100-stop', message: 'Stopping the SQL CPU burn workers.' };
+}
+
 export async function runSqlCpu100() {
   await ensureChaosSchema();
+  if (burnActive) {
+    return {
+      action: 'sql-cpu-100',
+      parallelism: CPU_BURN_PARALLELISM,
+      continuous: CPU_BURN_CONTINUOUS,
+      message:
+        'SQL CPU burn is already running continuously — Azure SQL CPU stays ' +
+        'pegged at ~100% until remediated (add the missing covering index) or ' +
+        'stopped. Ignoring duplicate request.',
+    };
+  }
+  burnActive = true;
   // Fire the report workers without awaiting so the HTTP request returns
-  // immediately while CPU stays pegged for the configured duration.
-  const deadline = Date.now() + CPU_BURN_SECONDS * 1000;
+  // immediately while CPU stays pegged. In continuous mode (default) there is no
+  // deadline: the burn runs until the SRE Agent remediates it (the covering
+  // index makes the scans cheap) or stopSqlCpu100() is called.
+  const deadline = CPU_BURN_CONTINUOUS ? Infinity : Date.now() + CPU_BURN_SECONDS * 1000;
   for (let i = 0; i < CPU_BURN_PARALLELISM; i++) {
     burnWorker(deadline).catch(() => {});
   }
   return {
     action: 'sql-cpu-100',
     parallelism: CPU_BURN_PARALLELISM,
-    seconds: CPU_BURN_SECONDS,
+    continuous: CPU_BURN_CONTINUOUS,
+    seconds: CPU_BURN_CONTINUOUS ? null : CPU_BURN_SECONDS,
     message:
       `Launched ${CPU_BURN_PARALLELISM} untuned sales-report loops (full table ` +
-      `scans of dbo.jb_Orders) for ${CPU_BURN_SECONDS}s. Azure SQL CPU will climb ` +
-      'to ~100%, app responses will degrade, and the SQL CPU alert (>= 85%) will ' +
-      'fire. Remediation: add the missing covering index (see runbook).',
+      `scans of dbo.jb_Orders) ` +
+      (CPU_BURN_CONTINUOUS
+        ? 'running continuously until remediated. '
+        : `for ${CPU_BURN_SECONDS}s. `) +
+      'Azure SQL CPU will climb to ~100%, app responses will degrade, and the ' +
+      'SQL CPU alert (>= 85%) will fire. Remediation: add the missing covering ' +
+      'index (see runbook).',
   };
 }

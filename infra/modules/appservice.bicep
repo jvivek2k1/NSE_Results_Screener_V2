@@ -116,10 +116,12 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'AZURE_RESOURCE_GROUP', value: resourceGroupName }
         { name: 'AZURE_SQL_SERVER_NAME', value: sqlServerName }
         { name: 'AZURE_AI_ACCOUNT_NAME', value: aiAccountName }
-        // SRE chaos demo — "SQL CPU 100%" tuning. The untuned report runs for
-        // ~15 min with enough parallelism to peg the serverless vCores while
-        // leaving pool connections free for the app's own health/data queries.
-        { name: 'CHAOS_CPU_SECONDS', value: '900' }
+        // SRE chaos demo — "SQL CPU 100%" tuning. The untuned report runs
+        // continuously (CHAOS_CPU_SECONDS=0) with enough parallelism to peg the
+        // serverless vCores while leaving pool connections free for the app's
+        // own health/data queries. CPU stays at ~100% until the SRE Agent
+        // remediates it (adding the covering index makes the scans cheap).
+        { name: 'CHAOS_CPU_SECONDS', value: '0' }
         { name: 'CHAOS_CPU_PARALLELISM', value: '4' }
         { name: 'CHAOS_CPU_ITERATIONS', value: '50' }
         { name: 'CHAOS_ORDERS_ROWS', value: '2000000' }
