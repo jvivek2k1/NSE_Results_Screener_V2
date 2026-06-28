@@ -74,6 +74,14 @@ IF NOT EXISTS (
 "@
 }
 
+# db_datareader/db_datawriter do NOT grant EXECUTE. The app runs stored
+# procedures (e.g. the SRE chaos demo's dbo.jb_RunSalesReport), so the managed
+# identity also needs EXECUTE on the dbo schema or readiness fails at runtime.
+$SqlQuery += @"
+
+GRANT EXECUTE ON SCHEMA::dbo TO [$AppName];
+"@
+
 # Ensure the rdbms-connect extension is installed (provides 'az sql db query')
 az extension show --name rdbms-connect *> $null
 if ($LASTEXITCODE -ne 0) {

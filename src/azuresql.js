@@ -176,6 +176,12 @@ async function query(build) {
     const activePool = await ensureReady();
     try {
       const result = await build(activePool.request());
+      // A successful query proves the connection is healthy. Clear any sticky
+      // 'error' state left by a previous NON-connection failure (e.g. a transient
+      // permission or query error). Without this the status never recovers
+      // because such errors don't reset the pool, so no reconnect — and thus no
+      // setStatus('connected') — ever runs again, wedging readiness at 503.
+      if (!status.ok) setStatus('connected');
       return result;
     } catch (err) {
       lastErr = err;

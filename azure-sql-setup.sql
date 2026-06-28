@@ -124,6 +124,9 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'jb_idx_upcoming_date')
 -- ALTER ROLE db_datareader ADD MEMBER [<MANAGED_IDENTITY_NAME>];
 -- ALTER ROLE db_datawriter ADD MEMBER [<MANAGED_IDENTITY_NAME>];
 -- The tables already exist (STEP 1), so the app needs NO db_ddladmin.
+-- db_datareader/db_datawriter do NOT grant EXECUTE. The SRE chaos demo runs the
+-- stored procedure dbo.jb_RunSalesReport, so the app principal also needs:
+-- GRANT EXECUTE ON SCHEMA::dbo TO [<MANAGED_IDENTITY_NAME>];
 
 
 /* ---------------------------------------------------------------------------

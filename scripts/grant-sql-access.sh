@@ -81,6 +81,13 @@ if [ "$SQL_GRANT_DDLADMIN" = "true" ]; then
 "
 fi
 
+# db_datareader/db_datawriter do NOT grant EXECUTE. The app runs stored
+# procedures (e.g. the SRE chaos demo's dbo.jb_RunSalesReport), so the managed
+# identity also needs EXECUTE on the dbo schema or readiness fails at runtime.
+SQL_QUERIES="$SQL_QUERIES
+  GRANT EXECUTE ON SCHEMA::dbo TO [$APP_NAME];
+"
+
 # Ensure the rdbms-connect extension is installed (provides 'az sql db query')
 if ! az extension show --name rdbms-connect >/dev/null 2>&1; then
   echo "Azure CLI extension 'rdbms-connect' is not installed. Installing..."

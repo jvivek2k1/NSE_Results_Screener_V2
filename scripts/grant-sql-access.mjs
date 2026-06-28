@@ -62,6 +62,10 @@ ${roles
   ALTER ROLE ${r} ADD MEMBER [${appName}];`
   )
   .join('\n')}
+-- db_datareader/db_datawriter do NOT grant EXECUTE. The app runs the chaos
+-- procedure dbo.jb_RunSalesReport (created by the Entra admin during provision),
+-- so the managed identity needs EXECUTE on the dbo schema to call it.
+GRANT EXECUTE ON SCHEMA::dbo TO [${appName}];
 `;
 
 const credential = new DefaultAzureCredential();
