@@ -121,6 +121,18 @@ export default function App() {
     return () => clearInterval(id);
   }, [loadResults, loadStats, loadMeta, loadAlerts, loadWatchlist]);
 
+  // Hard auto-refresh: reload the whole page every 15 seconds. This keeps the
+  // dashboard self-healing during transient backend/DB outages — once the
+  // backend recovers, the next reload pulls a healthy page instead of leaving
+  // the user stuck on a stale view or a gateway 502.
+  useEffect(() => {
+    const PAGE_RELOAD_MS = 15 * 1000;
+    const id = setInterval(() => {
+      window.location.reload();
+    }, PAGE_RELOAD_MS);
+    return () => clearInterval(id);
+  }, []);
+
   // Reset to page 1 when filters change.
   useEffect(() => {
     setPage(1);
