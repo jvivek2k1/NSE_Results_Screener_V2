@@ -115,14 +115,20 @@ export async function removeAiModel() {
 //
 // Once it exists the scans become seeks and CPU drops sharply. (See the
 // "SQL CPU saturation" scenario in docs/RUNBOOK.md.)
-const CPU_BURN_SECONDS = parseInt(process.env.CHAOS_CPU_SECONDS || '120', 10);
-const CPU_BURN_PARALLELISM = parseInt(process.env.CHAOS_CPU_PARALLELISM || '6', 10);
+// Default 15 minutes so the spike is clearly visible (and dwells at ~100%) in
+// the Azure SQL CPU metric charts, which aggregate on 1-minute grains.
+const CPU_BURN_SECONDS = parseInt(process.env.CHAOS_CPU_SECONDS || '900', 10);
+// 4 concurrent untuned full-scans saturate the 2-vCore serverless DB while
+// leaving pool connections free for the app (pool max is 10), so the app stays
+// up and the spike shows cleanly in DB metrics rather than knocking it offline.
+const CPU_BURN_PARALLELISM = parseInt(process.env.CHAOS_CPU_PARALLELISM || '4', 10);
 // Number of unindexed report passes per stored-proc call. Kept small enough that
 // a single call stays under the pool's request timeout (30s); workers re-fire
 // until the total CPU_BURN_SECONDS budget elapses.
-const CPU_REPORT_ITERATIONS = parseInt(process.env.CHAOS_CPU_ITERATIONS || '25', 10);
-// Rows seeded into the (deliberately unindexed) orders table.
-const CPU_ORDERS_ROWS = parseInt(process.env.CHAOS_ORDERS_ROWS || '400000', 10);
+const CPU_REPORT_ITERATIONS = parseInt(process.env.CHAOS_CPU_ITERATIONS || '50', 10);
+// Rows seeded into the (deliberately unindexed) orders table. Large enough that a
+// full clustered scan is genuinely expensive on the serverless vCores.
+const CPU_ORDERS_ROWS = parseInt(process.env.CHAOS_ORDERS_ROWS || '2000000', 10);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -145,15 +151,17 @@ BEGIN
   );
   ;WITH n AS (
     SELECT TOP (${CPU_ORDERS_ROWS}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS r
-    FROM sys.all_objects a CROSS JOIN sys.all_objects b
+    FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN sys.all_columns c
   )
   INSERT INTO dbo.jb_Orders (CustomerId, Region, Status, Amount, OrderDate, Notes)
   SELECT
-    (ABS(CHECKSUM(NEWID())) % 50000) + 1,
-    CHOOSE((ABS(CHECKSUM(NEWID())) % 5) + 1, N'North', N'South', N'East', N'West', N'Central'),
-    CHOOSE((ABS(CHECKSUM(NEWID())) % 5) + 1, N'PENDING', N'PAID', N'SHIPPED', N'CANCELLED', N'REFUNDED'),
-    CAST((ABS(CHECKSUM(NEWID())) % 1000000) / 100.0 AS DECIMAL(12,2)),
-    DATEADD(DAY, -(ABS(CHECKSUM(NEWID())) % 730), SYSUTCDATETIME()),
+    ((CHECKSUM(NEWID()) & 0x7FFFFFFF) % 50000) + 1,
+    CASE (CHECKSUM(NEWID()) & 0x7FFFFFFF) % 5
+      WHEN 0 THEN N'North' WHEN 1 THEN N'South' WHEN 2 THEN N'East' WHEN 3 THEN N'West' ELSE N'Central' END,
+    CASE (CHECKSUM(NEWID()) & 0x7FFFFFFF) % 5
+      WHEN 0 THEN N'PENDING' WHEN 1 THEN N'PAID' WHEN 2 THEN N'SHIPPED' WHEN 3 THEN N'CANCELLED' ELSE N'REFUNDED' END,
+    CAST(((CHECKSUM(NEWID()) & 0x7FFFFFFF) % 1000000) / 100.0 AS DECIMAL(12,2)),
+    DATEADD(DAY, -((CHECKSUM(NEWID()) & 0x7FFFFFFF) % 730), SYSUTCDATETIME()),
     NULL
   FROM n;
 END
@@ -161,25 +169,31 @@ END
   // CREATE/ALTER PROCEDURE must be the only statement in its batch.
   await runRawBatch(`
 CREATE OR ALTER PROCEDURE dbo.jb_RunSalesReport
-  @Iterations INT = 25
+  @Iterations INT = 50
 AS
 BEGIN
   SET NOCOUNT ON;
   DECLARE @i INT = 0;
   DECLARE @region NVARCHAR(40);
-  DECLARE @total DECIMAL(38,2);
+  DECLARE @total FLOAT;
   DECLARE @cnt BIGINT;
   WHILE @i < @Iterations
   BEGIN
     SET @region = CHOOSE((@i % 5) + 1, N'North', N'South', N'East', N'West', N'Central');
-    -- "Pending revenue for a region over the last 90 days." UNTUNED: there is no
-    -- index on (Status, Region, OrderDate), so this full-scans dbo.jb_Orders on
-    -- every pass. The missing covering index is the remediation (see runbook).
-    SELECT @total = SUM(o.Amount), @cnt = COUNT_BIG(*)
+    -- "Pending revenue + risk score for a region over the last year." UNTUNED:
+    -- there is no index on (Status, Region, OrderDate), so this full-scans the
+    -- multi-million-row dbo.jb_Orders on every pass AND runs heavy per-row math
+    -- (SQRT/POWER/LOG) on every surviving row. The missing covering index is the
+    -- remediation (see runbook).
+    SELECT @total = SUM(o.Amount
+                      * SQRT(POWER(CAST(o.Amount AS FLOAT), 2.0)
+                           + POWER(CAST(o.CustomerId AS FLOAT), 2.0))
+                      + LOG(ABS(CHECKSUM(o.CustomerId, o.OrderDate)) + 1.0)),
+           @cnt = COUNT_BIG(*)
     FROM dbo.jb_Orders AS o
     WHERE o.Status = N'PENDING'
       AND o.Region = @region
-      AND o.OrderDate >= DATEADD(DAY, -90, SYSUTCDATETIME());
+      AND o.OrderDate >= DATEADD(DAY, -365, SYSUTCDATETIME());
     SET @i += 1;
   END
 END

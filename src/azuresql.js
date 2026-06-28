@@ -114,7 +114,9 @@ async function buildPool() {
     },
     connectionTimeout: config.azureSqlConnectTimeoutMs,
     requestTimeout: config.azureSqlConnectTimeoutMs,
-    pool: { max: 5, min: 0, idleTimeoutMillis: 30000 },
+    // Headroom so the SRE "SQL CPU 100%" burn workers can hold several
+    // connections while the app's own health/data queries still get a slot.
+    pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
   });
   newPool.on('error', (err) => {
     setStatus('error', err);

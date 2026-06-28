@@ -42,7 +42,7 @@ function loadAzdEnv() {
 const env = loadAzdEnv();
 const serverRaw = env.AZURE_SQL_SERVER || env.SQL_SERVER;
 const database = env.AZURE_SQL_DATABASE || env.SQL_DATABASE;
-const ordersRows = parseInt(env.CHAOS_ORDERS_ROWS || '400000', 10);
+const ordersRows = parseInt(env.CHAOS_ORDERS_ROWS || '2000000', 10);
 
 if (!serverRaw || !database) {
   console.error('ERROR: AZURE_SQL_SERVER and AZURE_SQL_DATABASE must be set.');
@@ -51,7 +51,9 @@ if (!serverRaw || !database) {
 const server = serverRaw.includes('.') ? serverRaw : `${serverRaw}.database.windows.net`;
 
 // Large orders table — DELIBERATELY missing the (Status, Region, OrderDate)
-// index its reports need — seeded once with ~400k pseudo-random rows.
+// index its reports need. Created once, then idempotently TOPPED UP to the
+// target row count so re-running the script (or raising CHAOS_ORDERS_ROWS) grows
+// an existing table instead of leaving it small.
 const tableBatch = `
 IF OBJECT_ID('dbo.jb_Orders', 'U') IS NULL
 BEGIN
@@ -64,17 +66,25 @@ BEGIN
     OrderDate  DATETIME2(0)  NOT NULL,
     Notes      NVARCHAR(200) NULL
   );
+END;
+
+DECLARE @have BIGINT = (SELECT COUNT_BIG(*) FROM dbo.jb_Orders);
+DECLARE @need BIGINT = ${ordersRows} - @have;
+IF @need > 0
+BEGIN
   ;WITH n AS (
-    SELECT TOP (${ordersRows}) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS r
-    FROM sys.all_objects a CROSS JOIN sys.all_objects b
+    SELECT TOP (@need) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS r
+    FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN sys.all_columns c
   )
   INSERT INTO dbo.jb_Orders (CustomerId, Region, Status, Amount, OrderDate, Notes)
   SELECT
-    (ABS(CHECKSUM(NEWID())) % 50000) + 1,
-    CHOOSE((ABS(CHECKSUM(NEWID())) % 5) + 1, N'North', N'South', N'East', N'West', N'Central'),
-    CHOOSE((ABS(CHECKSUM(NEWID())) % 5) + 1, N'PENDING', N'PAID', N'SHIPPED', N'CANCELLED', N'REFUNDED'),
-    CAST((ABS(CHECKSUM(NEWID())) % 1000000) / 100.0 AS DECIMAL(12,2)),
-    DATEADD(DAY, -(ABS(CHECKSUM(NEWID())) % 730), SYSUTCDATETIME()),
+    ((CHECKSUM(NEWID()) & 0x7FFFFFFF) % 50000) + 1,
+    CASE (CHECKSUM(NEWID()) & 0x7FFFFFFF) % 5
+      WHEN 0 THEN N'North' WHEN 1 THEN N'South' WHEN 2 THEN N'East' WHEN 3 THEN N'West' ELSE N'Central' END,
+    CASE (CHECKSUM(NEWID()) & 0x7FFFFFFF) % 5
+      WHEN 0 THEN N'PENDING' WHEN 1 THEN N'PAID' WHEN 2 THEN N'SHIPPED' WHEN 3 THEN N'CANCELLED' ELSE N'REFUNDED' END,
+    CAST(((CHECKSUM(NEWID()) & 0x7FFFFFFF) % 1000000) / 100.0 AS DECIMAL(12,2)),
+    DATEADD(DAY, -((CHECKSUM(NEWID()) & 0x7FFFFFFF) % 730), SYSUTCDATETIME()),
     NULL
   FROM n;
 END
@@ -83,24 +93,30 @@ END
 // Untuned reporting procedure — must be the only statement in its batch.
 const procBatch = `
 CREATE OR ALTER PROCEDURE dbo.jb_RunSalesReport
-  @Iterations INT = 25
+  @Iterations INT = 50
 AS
 BEGIN
   SET NOCOUNT ON;
   DECLARE @i INT = 0;
   DECLARE @region NVARCHAR(40);
-  DECLARE @total DECIMAL(38,2);
+  DECLARE @total FLOAT;
   DECLARE @cnt BIGINT;
   WHILE @i < @Iterations
   BEGIN
     SET @region = CHOOSE((@i % 5) + 1, N'North', N'South', N'East', N'West', N'Central');
     -- UNTUNED: no index on (Status, Region, OrderDate) -> full clustered scan
-    -- of dbo.jb_Orders on every pass. The missing covering index is the fix.
-    SELECT @total = SUM(o.Amount), @cnt = COUNT_BIG(*)
+    -- of the multi-million-row dbo.jb_Orders on every pass, plus heavy per-row
+    -- math (SQRT/POWER/LOG) on every surviving row. The missing covering index
+    -- is the fix.
+    SELECT @total = SUM(o.Amount
+                      * SQRT(POWER(CAST(o.Amount AS FLOAT), 2.0)
+                           + POWER(CAST(o.CustomerId AS FLOAT), 2.0))
+                      + LOG(ABS(CHECKSUM(o.CustomerId, o.OrderDate)) + 1.0)),
+           @cnt = COUNT_BIG(*)
     FROM dbo.jb_Orders AS o
     WHERE o.Status = N'PENDING'
       AND o.Region = @region
-      AND o.OrderDate >= DATEADD(DAY, -90, SYSUTCDATETIME());
+      AND o.OrderDate >= DATEADD(DAY, -365, SYSUTCDATETIME());
     SET @i += 1;
   END
 END
@@ -134,7 +150,7 @@ async function main() {
   await pool.request().batch(procBatch);
   await pool.close();
   console.log(
-    `  Created dbo.jb_Orders (~${ordersRows} rows, intentionally unindexed) and dbo.jb_RunSalesReport.`
+    `  Ensured dbo.jb_Orders (~${ordersRows} rows, intentionally unindexed) and dbo.jb_RunSalesReport.`
   );
 }
 
