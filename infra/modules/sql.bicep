@@ -137,8 +137,8 @@ resource sqlBlockingAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!em
           metricNamespace: 'Microsoft.Sql/servers/databases'
           metricName: 'workers_percent'
           operator: 'GreaterThanOrEqual'
-          threshold: 10
-          timeAggregation: 'Maximum'
+          threshold: 20
+          timeAggregation: 'Average'
           criterionType: 'StaticThresholdCriterion'
         }
       ]

@@ -295,12 +295,11 @@ async function makeDedicatedPool() {
     options: { encrypt: true, trustServerCertificate: false },
     connectionTimeout: config.azureSqlConnectTimeoutMs,
     requestTimeout: 0, // 0 = no timeout: head blockers and waiters must hold/wait
-    pool: { max: 1, min: 1, idleTimeoutMillis: 24 * 60 * 60 * 1000 }, // keep alive ~24h (0 is rejected by tarn)
+    pool: { max: 1, min: 1, idleTimeoutMillis: 0 },
   });
-  pool.on('error', (e) => console.error(`[chaos:blocking] pool error: ${e?.message || e}`));
+  pool.on('error', () => {});
   await pool.connect();
   blockingPools.push(pool);
-  console.log(`[chaos:blocking] dedicated session connected (total ${blockingPools.length})`);
   return pool;
 }
 
@@ -357,7 +356,7 @@ UPDATE dbo.jb_BlockingDemo SET Val = Val + 1 WHERE Id = ${rowId};
 WAITFOR DELAY '23:59:59';
 COMMIT;`)
       )
-      .catch((err) => console.error(`[chaos:blocking] head blocker ${rowId} failed: ${err?.message || err}`));
+      .catch(() => {});
   }
 
   // Give the head blockers a moment to acquire their locks before the swarm hits.
@@ -373,7 +372,7 @@ COMMIT;`)
 SET LOCK_TIMEOUT -1;
 UPDATE dbo.jb_BlockingDemo SET Val = Val + 1 WHERE Id = ${rowId};`)
       )
-      .catch((err) => console.error(`[chaos:blocking] waiter row ${rowId} failed: ${err?.message || err}`));
+      .catch(() => {});
   }
 
   return {
