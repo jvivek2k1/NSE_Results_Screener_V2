@@ -6,7 +6,6 @@
 import { config, hasOpenAI, hasAzureOpenAI } from './config.js';
 import { localScore, ratingFromScore } from './scoring.js';
 import { extractPdfText } from './pdf.js';
-
 // Normalizes any provided endpoint (base resource URL or a full target URI
 // like .../openai/v1/responses) into the v1 base: ".../openai/v1/".
 function toV1BaseUrl(endpoint) {
@@ -130,6 +129,32 @@ export const aiEngine = {
 // Sends a minimal "ping" completion so a successful (non-throwing) response
 // confirms the endpoint, credentials and deployment are all healthy.
 // When running on the local engine there is nothing to reach, so it reports ok.
+//
+// The Foundry v1 (/openai/v1/) surface resolves base models by name even after
+// a deployment object is deleted, so a chat ping alone won't catch a removed
+// deployment. When Azure resource coordinates are configured we also verify the
+// deployment still exists on the AI account (management plane) so the SRE
+// "Remove AI model" scenario is detected deterministically.
+async function azureDeploymentExists() {
+  if (!config.azureSubscriptionId || !config.azureResourceGroup || !config.azureAiAccountName || !config.azureDeployment) {
+    return null; // coordinates not configured — skip the management-plane check
+  }
+  try {
+    const { DefaultAzureCredential } = await import('@azure/identity');
+    const cred = new DefaultAzureCredential();
+    const token = await cred.getToken('https://management.azure.com/.default');
+    const url =
+      `https://management.azure.com/subscriptions/${config.azureSubscriptionId}` +
+      `/resourceGroups/${config.azureResourceGroup}` +
+      `/providers/Microsoft.CognitiveServices/accounts/${config.azureAiAccountName}` +
+      `/deployments/${config.azureDeployment}?api-version=2024-10-01`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token.token}` } });
+    return res.ok; // 200 = exists; 404 = removed
+  } catch {
+    return null; // probe error — don't flip health on a transient mgmt-plane blip
+  }
+}
+
 export async function checkAIHealth() {
   const checkedAt = new Date().toISOString();
   if (!aiClient) {
@@ -147,6 +172,20 @@ export async function checkAIHealth() {
     };
     if (!isAzure) params.temperature = 0;
     await aiClient.chat.completions.create(params);
+    // Inference works; confirm the deployment hasn't been removed (Azure only).
+    if (isAzure) {
+      const exists = await azureDeploymentExists();
+      if (exists === false) {
+        return {
+          ok: false,
+          provider,
+          model: chatModel,
+          error: `Deployment "${chatModel}" not found on ${config.azureAiAccountName}.`,
+          latencyMs: Date.now() - startedAt,
+          checkedAt,
+        };
+      }
+    }
     return { ok: true, provider, model: chatModel, latencyMs: Date.now() - startedAt, checkedAt };
   } catch (err) {
     return {
