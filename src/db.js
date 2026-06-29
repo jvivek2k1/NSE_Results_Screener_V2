@@ -669,3 +669,12 @@ export function getDbStatus() {
 export function startDbHealthMonitor(intervalMs) {
   if (typeof repo.startHealthMonitor === 'function') repo.startHealthMonitor(intervalMs);
 }
+
+// Count sessions currently blocked behind a head blocker. Only meaningful for
+// the Azure SQL backend; local backends report 0 (no blocking concept).
+export async function getBlockedSessionCount() {
+  if (typeof repo.getBlockedSessionCount === 'function') {
+    return repo.getBlockedSessionCount();
+  }
+  return 0;
+}

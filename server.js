@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { config, hasAzureOpenAI, hasOpenAI, hasEmail } from './src/config.js';
-import { trackError } from './src/telemetry.js';
+import { trackError, trackMetric } from './src/telemetry.js';
 import { repo } from './src/db.js';
 import { addClient, broadcast, clientCount } from './src/sse.js';
 import { runScan, getLastScanAt, enrich, backfillHistory, purgeStaleFilings } from './src/pipeline.js';
@@ -19,7 +19,7 @@ import { universeSize } from './src/scraper.js';
 import { fetchUpcomingResults } from './src/nse.js';
 import { sendOpenNotification } from './src/mailer.js';
 import { checkAIHealth, aiEngine } from './src/ai.js';
-import { getDbStatus, startDbHealthMonitor } from './src/db.js';
+import { getDbStatus, startDbHealthMonitor, getBlockedSessionCount } from './src/db.js';
 import { disableSqlPublicAccess, removeAiModel, runSqlCpu100, runSqlBlocking } from './src/chaos.js';
 const app = express();
 app.use(cors());
@@ -444,4 +444,27 @@ app.listen(config.port, async () => {
   // flips readiness to 503, and surfaces the banner / 502 right away.
   startDbHealthMonitor(config.dbHealthIntervalMs);
   console.log(`[server] DB connectivity heartbeat active (every ${Math.round(config.dbHealthIntervalMs / 1000)}s)`);
+
+  // SQL blocking probe — there is no Azure SQL platform metric for blocked
+  // sessions, so the app counts them via the DMV and emits SqlBlockedSessions to
+  // App Insights. A log-query alert (alert-sql-blocking-high) keys off this
+  // metric, so a severe blocking tree is detected even though workers_percent /
+  // cpu_percent stay flat while sessions sit idle waiting on locks.
+  const runBlockingProbe = async () => {
+    try {
+      const blocked = await getBlockedSessionCount();
+      trackMetric('SqlBlockedSessions', blocked);
+      if (blocked >= config.blockingAlertThreshold) {
+        console.warn(
+          `[sql-blocking] ${blocked} session(s) blocked behind head blocker(s) ` +
+            `(>= threshold ${config.blockingAlertThreshold}) — alert-sql-blocking-high should fire.`
+        );
+      }
+    } catch {
+      /* transient DB error; the DB-connectivity alert covers outages */
+    }
+  };
+  await runBlockingProbe();
+  setInterval(runBlockingProbe, config.blockingProbeIntervalMs);
+  console.log(`[server] SQL blocking probe active (every ${Math.round(config.blockingProbeIntervalMs / 1000)}s)`);
 });

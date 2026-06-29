@@ -66,6 +66,10 @@ ${roles
 -- procedure dbo.jb_RunSalesReport (created by the Entra admin during provision),
 -- so the managed identity needs EXECUTE on the dbo schema to call it.
 GRANT EXECUTE ON SCHEMA::dbo TO [${appName}];
+-- VIEW DATABASE STATE lets the app read sys.dm_exec_requests for ALL sessions
+-- (not just its own), which the SQL blocking probe needs to count blocked
+-- sessions and emit the SqlBlockedSessions metric the blocking alert keys off.
+GRANT VIEW DATABASE STATE TO [${appName}];
 `;
 
 const credential = new DefaultAzureCredential();

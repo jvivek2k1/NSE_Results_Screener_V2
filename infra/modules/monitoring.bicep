@@ -181,6 +181,55 @@ union
   }
 }
 
+// Log-search alert: detects a severe SQL blocking tree. There is NO Azure SQL
+// platform metric for blocked sessions (workers_percent / cpu_percent stay flat
+// because blocked sessions sit idle waiting on locks), so the app probes the
+// blocking DMV and emits the `SqlBlockedSessions` custom metric. This alert
+// fires when that count stays at/above the threshold, routing to the action
+// group for the SRE Agent. Replaces the earlier workers_percent metric alert,
+// which could never trip during a blocking storm.
+resource sqlBlockingAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
+  name: 'alert-sql-blocking-high'
+  location: location
+  tags: tags
+  properties: {
+    displayName: 'alert-sql-blocking-high'
+    description: 'Severe Azure SQL blocking tree (30+ sessions parked behind head blockers) detected from the app\'s SqlBlockedSessions telemetry. Used by the SRE Agent to detect and remediate blocking.'
+    severity: 1
+    enabled: true
+    scopes: [
+      appInsights.id
+    ]
+    evaluationFrequency: 'PT1M'
+    windowSize: 'PT5M'
+    criteria: {
+      allOf: [
+        {
+          query: '''
+customMetrics
+| where name == 'SqlBlockedSessions'
+| summarize BlockedSessions = max(value) by bin(timestamp, 1m)
+'''
+          timeAggregation: 'Maximum'
+          metricMeasureColumn: 'BlockedSessions'
+          operator: 'GreaterThanOrEqual'
+          threshold: 20
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    autoMitigate: true
+    actions: {
+      actionGroups: [
+        actionGroup.id
+      ]
+    }
+  }
+}
+
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
 output appInsightsId string = appInsights.id
 output logAnalyticsWorkspaceId string = logAnalytics.id

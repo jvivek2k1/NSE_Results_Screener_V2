@@ -60,4 +60,21 @@ export function flushTelemetry() {
   }
 }
 
+// Emit a custom metric (e.g. SqlBlockedSessions) so it lands in App Insights
+// `customMetrics` and can drive a log-query alert. No-op when telemetry is off.
+export function trackMetric(name, value, properties = {}) {
+  if (!client || !Number.isFinite(value)) return;
+  try {
+    client.trackMetric({
+      name,
+      value,
+      properties: Object.fromEntries(
+        Object.entries(properties).map(([k, v]) => [k, v == null ? '' : String(v)])
+      ),
+    });
+  } catch {
+    /* telemetry must never break the app */
+  }
+}
+
 export const telemetryEnabled = Boolean(client);

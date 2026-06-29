@@ -206,6 +206,21 @@ export async function runRawBatch(batchText) {
   return query((request) => request.batch(batchText));
 }
 
+// Count sessions currently blocked behind another session (a blocking tree).
+// There is NO Azure SQL platform metric for blocking, so the app probes the
+// DMV itself and emits the count as a custom metric for alerting. Requires the
+// connecting identity to hold VIEW DATABASE STATE (granted to the app MI by
+// scripts/grant-sql-access.mjs); without it the DMV only shows the caller's own
+// session and the count would always read 0.
+export async function getBlockedSessionCount() {
+  const rs = await query((req) =>
+    req.query(
+      'SELECT COUNT(*) AS n FROM sys.dm_exec_requests WHERE blocking_session_id <> 0'
+    )
+  );
+  return rs.recordset?.[0]?.n ?? 0;
+}
+
 // Active connectivity heartbeat. Opens a FRESH short-lived connection each tick
 // (instead of reusing the long-lived pool) and runs a trivial `SELECT 1`. This
 // matters because disabling SQL public network access only blocks *new*
@@ -446,6 +461,7 @@ export function createAzureSqlRepo() {
     backend: 'azure-sql',
     getStatus,
     startHealthMonitor,
+    getBlockedSessionCount,
     async existsFiling(ticker, quarter) {
       const rs = await query((req) =>
         req
