@@ -64,12 +64,6 @@ param vmAdminPassword string = ''
 @description('Source IP/CIDR allowed to RDP into the jump-box. Empty = no inbound RDP rule.')
 param vmAllowedSourceIp string = ''
 
-@description('Egress IP/CIDR of the SRE Agent — the only source allowed to call the SQL-bridge Function.')
-param agentEgressIp string = '172.203.122.125/32'
-
-@description('Container image tag for the SRE SQL-bridge Function. Build/push the\nimage (az acr build -r acr<token> -t sqlbridge:<tag> ./functionapp) before or\nafter provisioning; the Function picks it up on its next restart.')
-param sqlBridgeImageTag string = 'v2'
-
 var deployVm = !empty(vmAdminUsername) && !empty(vmAdminPassword)
 
 var resourceToken = empty(resourceTokenOverride) ? toLower(uniqueString(subscription().id, environmentName, location)) : toLower(resourceTokenOverride)
@@ -127,8 +121,6 @@ module sql 'modules/sql.bicep' = {
     principalName: principalName
     principalType: principalType
     actionGroupId: monitoring.outputs.actionGroupId
-    peSubnetId: network.outputs.peSubnetId
-    vnetId: network.outputs.vnetId
   }
 }
 
@@ -217,6 +209,7 @@ module chaosAccess 'modules/chaos-access.bicep' = {
 
 // -------------------- Application Gateway (WAF v2) + alert --------------------
 module appGateway 'modules/appgateway.bicep' = {
+  name: 'appGateway'
   scope: rg
   params: {
     location: location
@@ -227,23 +220,6 @@ module appGateway 'modules/appgateway.bicep' = {
     wafPolicyId: network.outputs.wafPolicyId
     backendFqdn: appService.outputs.appHostName
     actionGroupId: monitoring.outputs.actionGroupId
-  }
-}
-
-// -------------------- SRE SQL bridge (VNet-integrated container Function) --------------------
-module sqlBridge 'modules/sqlbridge.bicep' = {
-  name: 'sqlBridge'
-  scope: rg
-  params: {
-    location: location
-    tags: tags
-    resourceToken: resourceToken
-    funcSubnetId: network.outputs.funcSubnetId
-    sqlServerFqdn: sql.outputs.sqlServerFqdn
-    sqlDatabaseName: sqlDatabaseName
-    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
-    agentEgressIp: agentEgressIp
-    imageTag: sqlBridgeImageTag
   }
 }
 
@@ -267,8 +243,3 @@ output APPLICATION_GATEWAY_URL string = 'http://${appGateway.outputs.publicIpAdd
 output KEY_VAULT_NAME string = keyVault.outputs.keyVaultName
 output SQL_JUMPBOX_FQDN string = deployVm ? jumpbox.outputs.vmFqdn : ''
 output SQL_JUMPBOX_PRIVATE_IP string = deployVm ? jumpbox.outputs.vmPrivateIp : ''
-
-output SQL_BRIDGE_FUNCTION_NAME string = sqlBridge.outputs.functionAppName
-output SQL_BRIDGE_FUNCTION_URL string = 'https://${sqlBridge.outputs.functionAppHostName}'
-output SQL_BRIDGE_ACR_NAME string = sqlBridge.outputs.acrName
-output SQL_BRIDGE_ACR_LOGIN_SERVER string = sqlBridge.outputs.acrLoginServer
