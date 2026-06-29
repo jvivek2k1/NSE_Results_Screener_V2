@@ -106,26 +106,6 @@ az monitor app-insights query --app $APPID --analytics-query \
  -o json --query "tables[0].rows"
 ```
 
-## SQL bridge tools (private SQL access)
-Azure SQL is **private-only** (public network access disabled, reachable solely
-over a Private Endpoint), so you cannot connect to it directly from the agent
-sandbox or with `sqlcmd`. All SQL access goes through the **SQL bridge** — a
-VNet-integrated Azure Function (`func-sqlbridge-…`) that authenticates to SQL
-with its managed identity. Three tools are registered against it (each configured
-as an agent custom tool from `scripts/sre-agent-sql-blocking-tool.py`, which reads
-`BROKER_BASE_URL` and `BROKER_FUNCTION_KEY` from the environment):
-
-| Tool | Action | Safety |
-|---|---|---|
-| `get_sql_blocking()` | Returns the current blocking tree (head blockers + victims). | Read-only, always safe — run this first for Scenario 9. |
-| `run_sql_query(sql, max_rows=100)` | Runs a **single read-only** `SELECT`/`WITH` against `JBDB` and returns columns/rows. | Read-only by construction: the MI is `db_datareader`-only and the query runs in an always-rollback transaction; the bridge rejects any mutation/DDL/EXEC, multi-statement, or commented SQL. Use for ad-hoc investigation (row counts, DMV reads, data sanity checks) when the fixed tools don't cover the question. |
-| `kill_sql_session(spid, confirm=True)` | Terminates one session (the head blocker). | Mutating + disruptive — **approval-gated**; only call after explicit user approval per the blocking policy. |
-
-Prefer the narrowest tool: `get_sql_blocking()` for blocking triage,
-`run_sql_query()` for any other read-only question, and `kill_sql_session()`
-only with approval. `run_sql_query` cannot change data, so it is safe to use
-autonomously during investigation.
-
 ## Signal → runbook scenario (triage only)
 Use this to route an observed signal to the right runbook scenario for **detection**
 steps. The runbook shows how to observe and confirm recovery; you must reach the
