@@ -54,6 +54,18 @@ param emailThrottleMinutes string = '10'
 @maxLength(16)
 param resourceTokenOverride string = ''
 
+@description('Local admin username for the SQL jump-box VM. Empty disables the VM.')
+param vmAdminUsername string = ''
+
+@secure()
+@description('Local admin password for the SQL jump-box VM. Empty disables the VM.')
+param vmAdminPassword string = ''
+
+@description('Source IP/CIDR allowed to RDP into the jump-box. Empty = no inbound RDP rule.')
+param vmAllowedSourceIp string = ''
+
+var deployVm = !empty(vmAdminUsername) && !empty(vmAdminPassword)
+
 var resourceToken = empty(resourceTokenOverride) ? toLower(uniqueString(subscription().id, environmentName, location)) : toLower(resourceTokenOverride)
 var tags = { 'azd-env-name': environmentName }
 
@@ -80,6 +92,7 @@ module network 'modules/network.bicep' = {
     location: location
     tags: tags
     resourceToken: resourceToken
+    mgmtAllowedSourceIp: vmAllowedSourceIp
   }
 }
 
@@ -157,6 +170,22 @@ module keyVault 'modules/keyvault.bicep' = {
   }
 }
 
+// -------------------- SQL jump-box VM (SSMS, on the SQL VNet) --------------------
+// Created only when admin credentials are supplied. The deploy script prompts
+// for them and passes via vmAdminUsername/vmAdminPassword.
+module jumpbox 'modules/jumpbox.bicep' = if (deployVm) {
+  name: 'jumpbox'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    resourceToken: resourceToken
+    mgmtSubnetId: network.outputs.mgmtSubnetId
+    adminUsername: vmAdminUsername
+    adminPassword: vmAdminPassword
+  }
+}
+
 // -------------------- Grant App MI access to the AI resource --------------------
 module aiAccess 'modules/ai-access.bicep' = {
   name: 'aiAccess'
@@ -212,3 +241,5 @@ output SERVICE_WEB_NAME string = appService.outputs.appName
 output SERVICE_WEB_URI string = 'https://${appService.outputs.appHostName}'
 output APPLICATION_GATEWAY_URL string = 'http://${appGateway.outputs.publicIpAddress}'
 output KEY_VAULT_NAME string = keyVault.outputs.keyVaultName
+output SQL_JUMPBOX_FQDN string = deployVm ? jumpbox.outputs.vmFqdn : ''
+output SQL_JUMPBOX_PRIVATE_IP string = deployVm ? jumpbox.outputs.vmPrivateIp : ''

@@ -55,6 +55,15 @@
     },
     "resourceTokenOverride": {
       "value": "${RESOURCE_TOKEN=}"
+    },
+    "vmAdminUsername": {
+      "value": "${VM_ADMIN_USERNAME=}"
+    },
+    "vmAdminPassword": {
+      "value": "${VM_ADMIN_PASSWORD=}"
+    },
+    "vmAllowedSourceIp": {
+      "value": "${VM_ALLOWED_SOURCE_IP=}"
     }
   }
 }

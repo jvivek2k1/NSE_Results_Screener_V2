@@ -6,8 +6,12 @@ param location string
 param tags object
 param resourceToken string
 
+@description('Source IP/CIDR allowed to RDP into the SQL jump-box VM. Empty = no inbound RDP rule (use Bastion/VPN).')
+param mgmtAllowedSourceIp string = ''
+
 var appGatewaySubnetName = 'snet-appgw'
 var appSubnetName = 'snet-app'
+var mgmtSubnetName = 'snet-mgmt'
 
 // NSG for the Application Gateway subnet. App Gateway v2 requires inbound from the
 // Internet (80/443) for client traffic and from the GatewayManager service tag
@@ -67,6 +71,32 @@ resource appNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
   }
 }
 
+// NSG for the management subnet (SQL jump-box VM). Allows RDP only from the
+// operator's source IP when provided; otherwise no inbound RDP rule is added
+// (the default DenyAllInBound applies, and access is via Bastion/VPN).
+resource mgmtNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
+  name: 'vnet-${resourceToken}-snet-mgmt-nsg-${location}'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: empty(mgmtAllowedSourceIp) ? [] : [
+      {
+        name: 'AllowRdpFromOperator'
+        properties: {
+          priority: 1000
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: mgmtAllowedSourceIp
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '3389'
+        }
+      }
+    ]
+  }
+}
+
 resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
   name: 'vnet-${resourceToken}'
   location: location
@@ -110,6 +140,15 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
               }
             }
           ]
+        }
+      }
+      {
+        name: mgmtSubnetName
+        properties: {
+          addressPrefix: '10.0.4.0/24'
+          networkSecurityGroup: {
+            id: mgmtNsg.id
+          }
         }
       }
     ]
@@ -158,5 +197,6 @@ resource wafPolicy 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPo
 
 output appGatewaySubnetId string = '${vnet.id}/subnets/${appGatewaySubnetName}'
 output appSubnetId string = '${vnet.id}/subnets/${appSubnetName}'
+output mgmtSubnetId string = '${vnet.id}/subnets/${mgmtSubnetName}'
 output publicIpId string = publicIp.id
 output wafPolicyId string = wafPolicy.id

@@ -451,6 +451,41 @@ else {
 }
 
 # ------------------------------------------------------------------
+# 7c. SQL jump-box VM (Windows + SQL Server 2025 Developer + SSMS).
+#     Lives on the SQL VNet so it can reach Azure SQL via the private
+#     endpoint. RDP is locked to your current public IP. The password is
+#     passed to the deployment as a secure parameter and not stored in .env.
+# ------------------------------------------------------------------
+Write-Step "SQL jump-box VM (optional)"
+
+$ans = Read-Host "    Create a Windows VM with SQL Server 2025 Developer + SSMS on the SQL VNet? [Y/n]"
+if ($ans -notmatch '^(n|no)$') {
+    $vmUser = Read-Host "    VM admin username [jvivek2k1]"
+    if ([string]::IsNullOrWhiteSpace($vmUser)) { $vmUser = 'jvivek2k1' }
+
+    Write-Host "    Enter the VM admin password (input is hidden; 12+ chars, mixed case + digit)." -ForegroundColor DarkGray
+    do {
+        $secureVmPwd = Read-Host "    VM password" -AsSecureString
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureVmPwd)
+        try { $vmPwdPlain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    } while ([string]::IsNullOrWhiteSpace($vmPwdPlain))
+
+    $myIp = (az rest --method get --uri 'https://api.ipify.org?format=json' -o tsv 2>$null)
+    if ([string]::IsNullOrWhiteSpace($myIp)) { $myIp = (Invoke-RestMethod 'https://api.ipify.org?format=json').ip }
+
+    azd env set VM_ADMIN_USERNAME   $vmUser     | Out-Null
+    azd env set VM_ADMIN_PASSWORD   $vmPwdPlain | Out-Null
+    if ($myIp) { azd env set VM_ALLOWED_SOURCE_IP $myIp | Out-Null }
+    Write-Ok "Jump-box will be created (admin: $vmUser, RDP allowed from: $myIp)"
+}
+else {
+    azd env set VM_ADMIN_USERNAME '' | Out-Null
+    azd env set VM_ADMIN_PASSWORD '' | Out-Null
+    Write-Ok "Jump-box VM skipped"
+}
+
+# ------------------------------------------------------------------
 # 8. Provision + deploy.
 # ------------------------------------------------------------------
 Write-Step "Provisioning Azure resources and deploying the app (this can take 10-20 minutes)"
