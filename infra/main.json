@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "12402253726746136784"
+      "templateHash": "7144272987983695505"
     }
   },
   "parameters": {
@@ -395,7 +395,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "8675304171648361461"
+              "templateHash": "17643466960322692024"
             }
           },
           "parameters": {
@@ -529,7 +529,7 @@
                   {
                     "name": "[variables('mgmtSubnetName')]",
                     "properties": {
-                      "addressPrefix": "10.0.3.0/24",
+                      "addressPrefix": "10.0.4.0/24",
                       "networkSecurityGroup": {
                         "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('vnet-{0}-snet-mgmt-nsg-{1}', parameters('resourceToken'), parameters('location')))]"
                       }
@@ -1475,7 +1475,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "18199013921240760837"
+              "templateHash": "7244741281335817684"
             }
           },
           "parameters": {
@@ -1606,7 +1606,7 @@
             {
               "type": "Microsoft.Compute/virtualMachines/extensions",
               "apiVersion": "2023-09-01",
-              "name": "[format('{0}/{1}', variables('vmName'), 'InstallSqlDevAndSsms')]",
+              "name": "[format('{0}/{1}', variables('vmName'), 'InstallSsms')]",
               "location": "[parameters('location')]",
               "properties": {
                 "publisher": "Microsoft.Compute",
@@ -1614,7 +1614,7 @@
                 "typeHandlerVersion": "1.10",
                 "autoUpgradeMinorVersion": true,
                 "settings": {
-                  "commandToExecute": "powershell -ExecutionPolicy Unrestricted -Command \"$ErrorActionPreference='Continue'; $d='C:\\sqlsetup'; New-Item -ItemType Directory -Force -Path $d | Out-Null; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://aka.ms/sql2025-developer-iso' -OutFile $d\\sql.iso } catch { Invoke-WebRequest -UseBasicParsing -Uri 'https://go.microsoft.com/fwlink/?linkid=2215158' -OutFile $d\\sql.iso }; $m=Mount-DiskImage -ImagePath $d\\sql.iso -PassThru; $v=($m | Get-Volume).DriveLetter; & ($v+':\\setup.exe') /Q /ACTION=Install /FEATURES=SQLENGINE /INSTANCENAME=MSSQLSERVER /SQLSYSADMINACCOUNTS=BUILTIN\\Administrators /IACCEPTSQLSERVERLICENSETERMS /EDITION=Developer /TCPENABLED=1; Dismount-DiskImage -ImagePath $d\\sql.iso; Invoke-WebRequest -UseBasicParsing -Uri 'https://aka.ms/ssmsfullsetup' -OutFile $d\\ssms.exe; Start-Process $d\\ssms.exe -ArgumentList '/install /quiet /norestart' -Wait\""
+                  "commandToExecute": "powershell -ExecutionPolicy Unrestricted -Command \"$ErrorActionPreference='Continue'; $d='C:\\sqlsetup'; New-Item -ItemType Directory -Force -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri 'https://aka.ms/ssms/22/release/vs_SSMS.exe' -OutFile $d\\ssms.exe; Start-Process $d\\ssms.exe -ArgumentList '--quiet --norestart' -Wait\""
                 }
               },
               "dependsOn": [

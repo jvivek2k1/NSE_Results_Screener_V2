@@ -277,6 +277,40 @@ confirmation.
 
 ---
 
+## Scenario 9 — Azure SQL blocking tree
+
+**Symptoms**
+- `alert-sql-blocking-high` fires (workers elevated by a severe blocking tree, severity 1).
+- Data endpoints sluggish or timing out; many sessions waiting, low CPU but rising worker
+  count — a **concurrency/lock** incident, not a connectivity or CPU outage.
+
+**Strict policy**
+- **Do NOT restart, stop, or recycle App Service.** A restart is never the fix for a SQL
+  blocking tree and is **forbidden as an autonomous action** — it requires explicit user
+  approval even for an autonomous agent.
+- Remediate **only inside Azure SQL**: identify the head blocker, explain it, and **ask the
+  user** before terminating (`KILL`) any session.
+
+**Detect / investigate** (run against `JBDB` with Entra auth — sqlcmd `-G`, ADS, or portal):
+```sql
+-- Blocking chain: head blockers and their victims
+SELECT r.session_id, r.blocking_session_id, r.wait_type, r.wait_time,
+       r.status, t.text AS sql_text
+FROM sys.dm_exec_requests r
+CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
+WHERE r.blocking_session_id <> 0 OR r.session_id IN
+      (SELECT blocking_session_id FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
+ORDER BY r.blocking_session_id;
+```
+
+**Remediate (with approval)**
+1. Identify the head-blocker SPID, the lock held, and the waiting sessions.
+2. Explain the impact to the user.
+3. With explicit user approval, terminate the head blocker: `KILL <spid>;`.
+4. Verify the chain clears and `alert-sql-blocking-high` auto-mitigates.
+
+---
+
 ## Appendix A — Useful App Insights queries (Portal → Logs)
 
 ```kql
