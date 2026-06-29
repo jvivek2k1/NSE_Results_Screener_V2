@@ -206,17 +206,47 @@ export async function runRawBatch(batchText) {
   return query((request) => request.batch(batchText));
 }
 
-// Active connectivity heartbeat. Runs a trivial `SELECT 1` against the pool so
-// an outage (e.g. SQL public network access disabled) is detected within
-// seconds even with no user traffic — instead of being masked by an idle, still
-// "connected"-looking pool. A success keeps status green; a connection failure
-// flips status to 'error' which makes /api/health/ready return 503 fast.
+// Active connectivity heartbeat. Opens a FRESH short-lived connection each tick
+// (instead of reusing the long-lived pool) and runs a trivial `SELECT 1`. This
+// matters because disabling SQL public network access only blocks *new*
+// connections — an already-established pooled session keeps working, masking the
+// outage. By probing with a new connection we detect the outage within seconds:
+// success keeps status green; a connection failure flips status to 'error' so
+// /api/health/ready returns 503 fast. A healthy probe also clears a sticky error.
 export async function pingNow() {
+  const PROBE_TIMEOUT_MS = 5000;
+  let probePool = null;
   try {
-    await query((request) => request.query('SELECT 1 AS ok'));
+    const tokenResponse = await credential.getToken(DB_TOKEN_SCOPE);
+    probePool = new sql.ConnectionPool({
+      server: config.azureSqlServer,
+      database: config.azureSqlDatabase,
+      port: config.azureSqlPort,
+      authentication: {
+        type: 'azure-active-directory-access-token',
+        options: { token: tokenResponse.token },
+      },
+      options: { encrypt: true, trustServerCertificate: false },
+      connectionTimeout: PROBE_TIMEOUT_MS,
+      requestTimeout: PROBE_TIMEOUT_MS,
+      pool: { max: 1, min: 0, idleTimeoutMillis: 1000 },
+    });
+    await probePool.connect();
+    await probePool.request().query('SELECT 1 AS ok');
+    if (!status.ok) setStatus('connected');
     return true;
-  } catch {
-    return false; // status already set to 'error' by query()
+  } catch (err) {
+    setStatus('error', err);
+    resetPool(); // drop the masking pooled session so app traffic also fails fast
+    return false;
+  } finally {
+    if (probePool) {
+      try {
+        await probePool.close();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
