@@ -142,6 +142,9 @@ network/identity topology changes; anything destructive or affecting other workl
 **Before enabling public network access on Azure SQL:** verify whether a Private Endpoint
 already exists for the SQL server. If one is present, do **not** enable public access —
 keep traffic on the private endpoint and investigate connectivity through it instead.
+**In case public network access needs to be enabled, any agent (including the SRE agent)
+must obtain explicit user permission first — even when operating autonomously.** This is
+never an auto-approved action.
 
 Always choose the narrowest action that restores service and verify before closing.
 
