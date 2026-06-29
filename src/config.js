@@ -64,6 +64,11 @@ export const config = {
   azureSqlMaxRetries: parseInt(process.env.AZURE_SQL_MAX_RETRIES || '6', 10),
   azureSqlRetryBaseMs: parseInt(process.env.AZURE_SQL_RETRY_BASE_MS || '1000', 10),
   azureSqlRetryMaxMs: parseInt(process.env.AZURE_SQL_RETRY_MAX_MS || '30000', 10),
+  // Active health-probe cadence: how often to actively ping the DB and AI model
+  // so an outage (e.g. SQL public access disabled, AI deployment removed) is
+  // detected within seconds even when no user traffic is flowing.
+  dbHealthIntervalMs: parseInt(process.env.DB_HEALTH_INTERVAL_MS || '5000', 10),
+  aiHealthIntervalMs: parseInt(process.env.AI_HEALTH_INTERVAL_MS || '5000', 10),
   // Only seed/scan filings broadcast within this many days (0 = no age limit).
   // Keeps the AI from spending tokens on stale quarterly filings.
   filingMaxAgeDays: parseInt(process.env.FILING_MAX_AGE_DAYS || '1', 10),

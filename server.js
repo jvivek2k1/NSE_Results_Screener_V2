@@ -19,7 +19,7 @@ import { universeSize } from './src/scraper.js';
 import { fetchUpcomingResults } from './src/nse.js';
 import { sendOpenNotification } from './src/mailer.js';
 import { checkAIHealth, aiEngine } from './src/ai.js';
-import { getDbStatus } from './src/db.js';
+import { getDbStatus, startDbHealthMonitor } from './src/db.js';
 import { disableSqlPublicAccess, removeAiModel, runSqlCpu100 } from './src/chaos.js';
 const app = express();
 app.use(cors());
@@ -314,10 +314,10 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 // for longer than READY_AI_GRACE_MS, readiness reports 503. The local engine
 // (no real endpoint to reach) and the pre-first-probe startup window never block
 // readiness.
-const READY_CONNECTING_GRACE_MS = 90000;
+const READY_CONNECTING_GRACE_MS = 10000;
 // Short grace to ride out a transient AI blip, but fail readiness quickly when
 // the AI dependency is genuinely down so the app is taken out of rotation fast.
-const READY_AI_GRACE_MS = 20000;
+const READY_AI_GRACE_MS = 10000;
 
 function getAiReadiness() {
   // Local engine or not-yet-probed at startup: never block readiness.
@@ -426,6 +426,12 @@ app.listen(config.port, async () => {
     broadcast('ai-health', lastAIHealth);
   }
   await runAIHealthCheck();
-  setInterval(runAIHealthCheck, 60_000);
-  console.log('[server] AI model health monitor active (every 60s)');
+  setInterval(runAIHealthCheck, config.aiHealthIntervalMs);
+  console.log(`[server] AI model health monitor active (every ${Math.round(config.aiHealthIntervalMs / 1000)}s)`);
+
+  // Active DB connectivity heartbeat — pings the database on a tight interval so
+  // an outage (e.g. SQL public access disabled) is detected within seconds,
+  // flips readiness to 503, and surfaces the banner / 502 right away.
+  startDbHealthMonitor(config.dbHealthIntervalMs);
+  console.log(`[server] DB connectivity heartbeat active (every ${Math.round(config.dbHealthIntervalMs / 1000)}s)`);
 });

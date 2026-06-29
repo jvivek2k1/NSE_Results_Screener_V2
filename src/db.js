@@ -662,3 +662,10 @@ export function getDbStatus() {
   if (typeof repo.getStatus === 'function') return repo.getStatus();
   return { ok: true, backend: repo.backend, state: 'connected', error: null };
 }
+
+// Start an active connectivity heartbeat so an outage is detected within seconds
+// even with no traffic. Only the Azure SQL backend can lose connectivity; local
+// backends are no-ops.
+export function startDbHealthMonitor(intervalMs) {
+  if (typeof repo.startHealthMonitor === 'function') repo.startHealthMonitor(intervalMs);
+}

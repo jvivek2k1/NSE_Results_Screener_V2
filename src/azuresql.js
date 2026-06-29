@@ -206,6 +206,38 @@ export async function runRawBatch(batchText) {
   return query((request) => request.batch(batchText));
 }
 
+// Active connectivity heartbeat. Runs a trivial `SELECT 1` against the pool so
+// an outage (e.g. SQL public network access disabled) is detected within
+// seconds even with no user traffic — instead of being masked by an idle, still
+// "connected"-looking pool. A success keeps status green; a connection failure
+// flips status to 'error' which makes /api/health/ready return 503 fast.
+export async function pingNow() {
+  try {
+    await query((request) => request.query('SELECT 1 AS ok'));
+    return true;
+  } catch {
+    return false; // status already set to 'error' by query()
+  }
+}
+
+let heartbeatTimer = null;
+export function startHealthMonitor(intervalMs = 5000) {
+  if (heartbeatTimer) return;
+  const tick = () => {
+    pingNow().catch(() => {});
+  };
+  tick();
+  heartbeatTimer = setInterval(tick, intervalMs);
+  if (heartbeatTimer.unref) heartbeatTimer.unref();
+}
+
+export function stopHealthMonitor() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
 // -------------------- Schema --------------------
 // All app-owned database objects are prefixed with `jb_` so they are easy to
 // identify alongside other objects in the shared JBDB database.
@@ -383,7 +415,7 @@ export function createAzureSqlRepo() {
   return {
     backend: 'azure-sql',
     getStatus,
-
+    startHealthMonitor,
     async existsFiling(ticker, quarter) {
       const rs = await query((req) =>
         req
