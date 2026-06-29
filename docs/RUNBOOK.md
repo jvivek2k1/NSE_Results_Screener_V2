@@ -291,7 +291,12 @@ confirmation.
 - Remediate **only inside Azure SQL**: identify the head blocker, explain it, and **ask the
   user** before terminating (`KILL`) any session.
 
-**Detect / investigate** (run against `JBDB` with Entra auth — sqlcmd `-G`, ADS, or portal):
+**Detect / investigate.** Azure SQL is **private-only**, so use the **SQL bridge**
+tools (see SRE-AGENT-INSTRUCTIONS.md → "SQL bridge tools"), not `sqlcmd`:
+- `get_sql_blocking()` returns the head blockers and their victims directly.
+- For any other read-only check, use `run_sql_query("SELECT …")` (single
+  `SELECT`/`WITH` only; it is `db_datareader`-only and always rolls back). For
+  example, the equivalent blocking-chain query:
 ```sql
 -- Blocking chain: head blockers and their victims
 SELECT r.session_id, r.blocking_session_id, r.wait_type, r.wait_time,
@@ -306,7 +311,8 @@ ORDER BY r.blocking_session_id;
 **Remediate (with approval)**
 1. Identify the head-blocker SPID, the lock held, and the waiting sessions.
 2. Explain the impact to the user.
-3. With explicit user approval, terminate the head blocker: `KILL <spid>;`.
+3. With explicit user approval, terminate the head blocker with
+   `kill_sql_session(<spid>, confirm=True)` (equivalent to `KILL <spid>;`).
 4. Verify the chain clears and `alert-sql-blocking-high` auto-mitigates.
 
 ---
