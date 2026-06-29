@@ -41,6 +41,16 @@ IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '${miName}')
   CREATE USER [${miName}] FROM LOGIN [${miName}];
 GRANT VIEW DATABASE STATE TO [${miName}];
 GRANT KILL DATABASE CONNECTION TO [${miName}];
+-- Read-only data access for the guarded /api/query endpoint. db_datareader
+-- grants SELECT only - no INSERT/UPDATE/DELETE/DDL/EXEC - so the adhoc query
+-- path cannot mutate data or escalate privilege even if a payload slips past
+-- the statement validation in the Function.
+IF NOT EXISTS (
+  SELECT 1 FROM sys.database_role_members drm
+  JOIN sys.database_principals rp ON drm.role_principal_id = rp.principal_id
+  JOIN sys.database_principals mp ON drm.member_principal_id = mp.principal_id
+  WHERE rp.name = 'db_datareader' AND mp.name = '${miName}')
+  ALTER ROLE db_datareader ADD MEMBER [${miName}];
 `;
 
 const credential = new DefaultAzureCredential();
@@ -54,4 +64,4 @@ const pool = new sql.ConnectionPool({
 await pool.connect();
 await pool.request().batch(batch);
 await pool.close();
-console.log(`Granted ${miName} VIEW DATABASE STATE + KILL DATABASE CONNECTION in ${database}.`);
+console.log(`Granted ${miName} VIEW DATABASE STATE + KILL DATABASE CONNECTION + db_datareader in ${database}.`);

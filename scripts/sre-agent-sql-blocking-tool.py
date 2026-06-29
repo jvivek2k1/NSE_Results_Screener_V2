@@ -4,7 +4,7 @@ SRE Agent tool — Azure SQL blocking diagnostics & remediation via the SQL brid
 The agent sandbox cannot reach the private-endpoint Azure SQL server directly
 (its VNet is closed). Instead it calls the VNet-integrated "SQL bridge" Azure
 Function over HTTPS. The Function authenticates to SQL with its managed identity
-and exposes only two intent-based, parameterized operations — no arbitrary SQL.
+and exposes intent-based operations plus a guarded read-only adhoc query.
 
 Configure these as the agent's Python tools. Provide the two secrets/config
 values via environment variables (do NOT hardcode the key):
@@ -15,6 +15,9 @@ values via environment variables (do NOT hardcode the key):
 Endpoints called:
     GET  /api/diagnose            -> read-only blocking-tree report (always safe)
     POST /api/kill {spid,confirm} -> KILL one session (approval-gated)
+    POST /api/query {sql,max_rows}-> guarded READ-ONLY adhoc query (SELECT/WITH);
+                                     db_datareader-only + always-rollback, so it
+                                     cannot mutate data.
 """
 
 import os
@@ -89,6 +92,26 @@ def kill_sql_session(spid: int, confirm: bool = False) -> dict:
         or {"error": ...} on failure / missing confirmation.
     """
     return _request("kill", "POST", {"spid": int(spid), "confirm": bool(confirm)})
+
+
+def run_sql_query(sql: str, max_rows: int = 100) -> dict:
+    """Run a READ-ONLY adhoc SQL query via the bridge.
+
+    Only a single SELECT / WITH (CTE) statement is accepted. The bridge enforces
+    layered guards: the managed identity is db_datareader-only, the query runs in
+    an always-rollback transaction, and the statement is validated (single
+    statement, no comments, keyword denylist, length + row caps). It therefore
+    cannot mutate data or escalate privilege.
+
+    Args:
+        sql: a single read-only SELECT/WITH statement.
+        max_rows: max rows to return (capped server-side, default 100, max 1000).
+
+    Returns:
+        dict {"columns": [...], "rows": [...], "row_count": n, "truncated": bool}
+        on success, or {"error": ...} if validation fails or the query errors.
+    """
+    return _request("query", "POST", {"sql": str(sql), "max_rows": int(max_rows)})
 
 
 if __name__ == "__main__":
