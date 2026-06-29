@@ -47,4 +47,5 @@ export const api = {
   chaosDisableSqlPublicAccess: () => send('POST', '/chaos/disable-sql-public-access'),
   chaosRemoveAiModel: () => send('POST', '/chaos/remove-ai-model'),
   chaosSqlCpu100: () => send('POST', '/chaos/sql-cpu-100'),
+  chaosBlocking: () => send('POST', '/chaos/blocking'),
 };

@@ -110,6 +110,48 @@ resource sqlCpuAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(a
   }
 }
 
+// Metric alert: fires when blocked sessions pile up — the signal the SRE Agent
+// picks up for the "Blocking" chaos scenario. A severe blocking tree keeps 30+
+// sessions parked behind head blockers, so the database's worker usage stays
+// elevated. Routes to the shared action group so the Agent is notified.
+resource sqlBlockingAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(actionGroupId)) {
+  name: 'alert-sql-blocking-high'
+  location: 'global'
+  tags: tags
+  properties: {
+    description: 'Azure SQL database worker usage elevated by a severe blocking tree (30+ sessions blocked behind head blockers). Used by the SRE Agent to detect and remediate blocking.'
+    severity: 1
+    enabled: true
+    scopes: [
+      sqlDatabase.id
+    ]
+    evaluationFrequency: 'PT1M'
+    windowSize: 'PT5M'
+    targetResourceType: 'Microsoft.Sql/servers/databases'
+    targetResourceRegion: location
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'HighWorkers'
+          metricNamespace: 'Microsoft.Sql/servers/databases'
+          metricName: 'workers_percent'
+          operator: 'GreaterThanOrEqual'
+          threshold: 20
+          timeAggregation: 'Average'
+          criterionType: 'StaticThresholdCriterion'
+        }
+      ]
+    }
+    autoMitigate: true
+    actions: [
+      {
+        actionGroupId: actionGroupId
+      }
+    ]
+  }
+}
+
 output sqlServerName string = sqlServer.name
 output sqlServerFqdn string = sqlServer.properties.fullyQualifiedDomainName
 output sqlDatabaseName string = sqlDatabase.name

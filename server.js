@@ -20,7 +20,7 @@ import { fetchUpcomingResults } from './src/nse.js';
 import { sendOpenNotification } from './src/mailer.js';
 import { checkAIHealth, aiEngine } from './src/ai.js';
 import { getDbStatus, startDbHealthMonitor } from './src/db.js';
-import { disableSqlPublicAccess, removeAiModel, runSqlCpu100 } from './src/chaos.js';
+import { disableSqlPublicAccess, removeAiModel, runSqlCpu100, runSqlBlocking } from './src/chaos.js';
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -267,6 +267,16 @@ app.post('/api/chaos/sql-cpu-100', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (err) {
     trackError(err, { chaos: 'sql-cpu-100' });
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/chaos/blocking', async (req, res) => {
+  try {
+    const result = await runSqlBlocking();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    trackError(err, { chaos: 'blocking' });
     res.status(500).json({ ok: false, error: err.message });
   }
 });

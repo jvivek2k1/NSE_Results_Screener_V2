@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, RefreshCw, Building2, Clock, ShieldAlert, Database, BrainCircuit, Cpu, ChevronDown } from 'lucide-react';
+import { Activity, RefreshCw, Building2, Clock, ShieldAlert, Database, BrainCircuit, Cpu, Lock, ChevronDown } from 'lucide-react';
 
 // Returns the wall-clock time (HH:MM:SS) of the next scheduled scan, rolling
 // forward whenever the previous target passes so it never gets stuck on "now".
@@ -127,6 +127,12 @@ function SreMenu({ onChaos, busy }) {
       label: 'SQL CPU 100%',
       desc: 'Untuned queries scan an unindexed table',
       icon: Cpu,
+    },
+    {
+      key: 'blocking',
+      label: 'Blocking',
+      desc: '30+ sessions stuck behind head blockers',
+      icon: Lock,
     },
   ];
 

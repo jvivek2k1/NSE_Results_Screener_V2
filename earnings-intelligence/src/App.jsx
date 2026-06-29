@@ -233,6 +233,12 @@ export default function App() {
           'Drive Azure SQL CPU to 100%? Untuned report queries will full-scan a large table in parallel, app responses will degrade, and the SQL CPU alert (>= 85%) will fire. The SRE Agent diagnoses and remediates it.',
         title: 'Spiking SQL CPU to 100%',
       },
+      blocking: {
+        call: api.chaosBlocking,
+        confirm:
+          'Trigger a severe SQL blocking storm? 30+ sessions will pile up behind two head blockers holding uncommitted exclusive locks and stay blocked until remediated, so the blocking alert will fire. The SRE Agent diagnoses and remediates it.',
+        title: 'Triggering SQL blocking storm',
+      },
     }[action];
     if (!spec) return;
     if (!window.confirm(spec.confirm)) return;

@@ -14,16 +14,22 @@
 //      parallel against Azure SQL (data plane), saturating the serverless vCores
 //      so CPU pegs at ~100% and the app's responses degrade badly. The SQL CPU
 //      metric alert (>= 85%) fires and routes to the action group.
+//   4. runSqlBlocking()         — opens many dedicated sessions (data plane) that
+//      pile up behind two head blockers holding uncommitted exclusive locks, so
+//      30+ sessions stay blocked indefinitely until remediated. The SQL blocking
+//      alert fires and routes to the action group.
 //
 // Management-plane calls authenticate with the App Service managed identity via
 // DefaultAzureCredential (ARM scope). The identity is granted "SQL Server
 // Contributor" and "Cognitive Services Contributor" by infra/modules/chaos-access.bicep.
 // ============================================================
+import sql from 'mssql';
 import { DefaultAzureCredential } from '@azure/identity';
 import { config } from './config.js';
 import { runRawBatch } from './azuresql.js';
 
 const credential = new DefaultAzureCredential();
+const DB_TOKEN_SCOPE = 'https://database.windows.net/.default';
 const ARM_BASE = 'https://management.azure.com';
 const ARM_SCOPE = 'https://management.azure.com/.default';
 
@@ -258,5 +264,126 @@ export async function runSqlCpu100() {
       'Azure SQL CPU will climb to ~100%, app responses will degrade, and the ' +
       'SQL CPU alert (>= 85%) will fire. Diagnosis and remediation are left to ' +
       'the SRE Agent (see runbook).',
+  };
+}
+
+// -------------------- 4) Severe Azure SQL blocking tree (won't auto-resolve) --
+// Two "head blocker" sessions each open a transaction, take an exclusive lock on
+// a distinct row in dbo.jb_BlockingDemo, then sit idle (WAITFOR) holding the lock
+// open WITHOUT committing. A swarm of waiter sessions then tries to update those
+// same rows with LOCK_TIMEOUT disabled, so they pile up behind the head blockers
+// and stay blocked indefinitely — there are >30 blocked sessions and >1 head
+// blocker, and nothing times out, so the tree never auto-resolves. Remediating
+// (killing the head blockers) is left to the SRE Agent. stopSqlBlocking() closes
+// every dedicated session, which rolls back the transactions and clears the tree.
+const BLOCK_HEAD_BLOCKERS = parseInt(process.env.CHAOS_BLOCK_HEADS || '2', 10);
+const BLOCK_WAITERS = parseInt(process.env.CHAOS_BLOCK_WAITERS || '32', 10);
+
+let blockingActive = false;
+const blockingPools = [];
+
+async function makeDedicatedPool() {
+  const tokenResponse = await credential.getToken(DB_TOKEN_SCOPE);
+  const pool = new sql.ConnectionPool({
+    server: config.azureSqlServer,
+    database: config.azureSqlDatabase,
+    port: config.azureSqlPort,
+    authentication: {
+      type: 'azure-active-directory-access-token',
+      options: { token: tokenResponse.token },
+    },
+    options: { encrypt: true, trustServerCertificate: false },
+    connectionTimeout: config.azureSqlConnectTimeoutMs,
+    requestTimeout: 0, // 0 = no timeout: head blockers and waiters must hold/wait
+    pool: { max: 1, min: 1, idleTimeoutMillis: 0 },
+  });
+  pool.on('error', () => {});
+  await pool.connect();
+  blockingPools.push(pool);
+  return pool;
+}
+
+async function ensureBlockingSchema() {
+  await runRawBatch(`
+IF OBJECT_ID('dbo.jb_BlockingDemo', 'U') IS NULL
+BEGIN
+  CREATE TABLE dbo.jb_BlockingDemo (
+    Id    INT          NOT NULL CONSTRAINT jb_PK_BlockingDemo PRIMARY KEY,
+    Bucket NVARCHAR(40) NOT NULL,
+    Val   INT          NOT NULL
+  );
+  ;WITH n AS (SELECT TOP (16) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS r FROM sys.all_objects)
+  INSERT INTO dbo.jb_BlockingDemo (Id, Bucket, Val)
+  SELECT r, CONCAT(N'reconcile-', r), 0 FROM n;
+END
+`);
+}
+
+export function stopSqlBlocking() {
+  blockingActive = false;
+  const closing = blockingPools.splice(0);
+  for (const p of closing) {
+    p.close().catch(() => {});
+  }
+  return {
+    action: 'sql-blocking-stop',
+    message: `Closing ${closing.length} blocking session(s) — transactions roll back and the tree clears.`,
+  };
+}
+
+export async function runSqlBlocking() {
+  await ensureBlockingSchema();
+  if (blockingActive) {
+    return {
+      action: 'sql-blocking',
+      message:
+        'A blocking storm is already running — 30+ sessions stay blocked until ' +
+        'remediated or stopped. Ignoring duplicate request.',
+    };
+  }
+  blockingActive = true;
+
+  // Head blockers: each grabs an exclusive lock on its row inside an uncommitted
+  // transaction, then waits forever. Fired without await so they hold the locks.
+  for (let h = 0; h < BLOCK_HEAD_BLOCKERS; h++) {
+    const rowId = h + 1;
+    makeDedicatedPool()
+      .then((pool) =>
+        pool.request().batch(`
+SET XACT_ABORT ON;
+BEGIN TRAN;
+UPDATE dbo.jb_BlockingDemo SET Val = Val + 1 WHERE Id = ${rowId};
+WAITFOR DELAY '23:59:59';
+COMMIT;`)
+      )
+      .catch(() => {});
+  }
+
+  // Give the head blockers a moment to acquire their locks before the swarm hits.
+  await sleep(1500);
+
+  // Waiters: split evenly across the head-blocked rows, each tries to update the
+  // locked row with LOCK_TIMEOUT disabled so they block indefinitely.
+  for (let w = 0; w < BLOCK_WAITERS; w++) {
+    const rowId = (w % BLOCK_HEAD_BLOCKERS) + 1;
+    makeDedicatedPool()
+      .then((pool) =>
+        pool.request().batch(`
+SET LOCK_TIMEOUT -1;
+UPDATE dbo.jb_BlockingDemo SET Val = Val + 1 WHERE Id = ${rowId};`)
+      )
+      .catch(() => {});
+  }
+
+  return {
+    action: 'sql-blocking',
+    headBlockers: BLOCK_HEAD_BLOCKERS,
+    waiters: BLOCK_WAITERS,
+    message:
+      `Launched ${BLOCK_HEAD_BLOCKERS} head blockers holding uncommitted exclusive ` +
+      `locks and ${BLOCK_WAITERS} blocked sessions behind them. ${BLOCK_WAITERS}+ ` +
+      'sessions stay blocked indefinitely (no lock timeout), so the tree never ' +
+      'auto-resolves. The SQL blocking alert fires and routes to the action ' +
+      'group. Remediation is left to the SRE Agent (see runbook).',
   };
 }
