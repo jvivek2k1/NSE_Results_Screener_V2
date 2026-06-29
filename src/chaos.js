@@ -295,7 +295,12 @@ async function makeDedicatedPool() {
     options: { encrypt: true, trustServerCertificate: false },
     connectionTimeout: config.azureSqlConnectTimeoutMs,
     requestTimeout: 0, // 0 = no timeout: head blockers and waiters must hold/wait
-    pool: { max: 1, min: 1, idleTimeoutMillis: 0 },
+    // NOTE: idleTimeoutMillis must be > 0 — Tarn rejects 0 with
+    // "invalid opt.idleTimeoutMillis 0", which previously made every dedicated
+    // session fail to connect (silently, via the fire-and-forget .catch), so no
+    // blocking was ever produced. The session is held in-use the whole time, so
+    // idle reaping never actually fires; a large value just expresses "never".
+    pool: { max: 1, min: 1, idleTimeoutMillis: 86400000 },
   });
   pool.on('error', () => {});
   await pool.connect();
@@ -343,21 +348,31 @@ export async function runSqlBlocking() {
   }
   blockingActive = true;
 
-  // Head blockers: each grabs an exclusive lock on its row inside an uncommitted
-  // transaction, then waits forever. Fired without await so they hold the locks.
-  for (let h = 0; h < BLOCK_HEAD_BLOCKERS; h++) {
+  // Head blockers: each opens a dedicated session, grabs an exclusive lock on its
+  // row inside an uncommitted transaction, then waits forever holding it. Connect
+  // first (await) so a connection failure surfaces as a real error instead of
+  // silently no-op'ing; only the long-running locking batch is fire-and-forget.
+  let headPools;
+  try {
+    headPools = await Promise.all(
+      Array.from({ length: BLOCK_HEAD_BLOCKERS }, () => makeDedicatedPool())
+    );
+  } catch (err) {
+    blockingActive = false;
+    throw new Error(`Failed to open head-blocker session(s): ${err.message}`);
+  }
+  headPools.forEach((pool, h) => {
     const rowId = h + 1;
-    makeDedicatedPool()
-      .then((pool) =>
-        pool.request().batch(`
+    pool
+      .request()
+      .batch(`
 SET XACT_ABORT ON;
 BEGIN TRAN;
 UPDATE dbo.jb_BlockingDemo SET Val = Val + 1 WHERE Id = ${rowId};
 WAITFOR DELAY '23:59:59';
 COMMIT;`)
-      )
       .catch(() => {});
-  }
+  });
 
   // Give the head blockers a moment to acquire their locks before the swarm hits.
   await sleep(1500);
