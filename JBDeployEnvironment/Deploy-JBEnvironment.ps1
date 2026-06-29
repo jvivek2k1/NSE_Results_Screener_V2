@@ -451,14 +451,14 @@ else {
 }
 
 # ------------------------------------------------------------------
-# 7c. SQL jump-box VM (Windows + SQL Server 2025 Developer + SSMS).
+# 7c. SQL jump-box VM (Windows + SSMS 22).
 #     Lives on the SQL VNet so it can reach Azure SQL via the private
 #     endpoint. RDP is locked to your current public IP. The password is
 #     passed to the deployment as a secure parameter and not stored in .env.
 # ------------------------------------------------------------------
 Write-Step "SQL jump-box VM (optional)"
 
-$ans = Read-Host "    Create a Windows VM with SQL Server 2025 Developer + SSMS on the SQL VNet? [Y/n]"
+$ans = Read-Host "    Create a Windows VM with SSMS 22 on the SQL VNet? [Y/n]"
 if ($ans -notmatch '^(n|no)$') {
     $vmUser = Read-Host "    VM admin username [jvivek2k1]"
     if ([string]::IsNullOrWhiteSpace($vmUser)) { $vmUser = 'jvivek2k1' }

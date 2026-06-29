@@ -1,9 +1,8 @@
 // ============================================================
 // SQL jump-box VM — Windows Server in the management subnet (snet-mgmt) on the
 // same VNet as Azure SQL, so it can reach the database through the private
-// endpoint. A custom-script extension installs SQL Server 2025 Developer edition
-// (falls back to 2022 if the 2025 media is unavailable) plus SSMS, giving you a
-// ready-to-use admin box inside the network.
+// endpoint. A custom-script extension installs SQL Server Management Studio
+// (SSMS) 22, giving you a ready-to-use admin box inside the network.
 // ============================================================
 param location string
 param tags object
@@ -100,10 +99,11 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   }
 }
 
-// Install SQL Server 2025 Developer edition (fallback to 2022) + SSMS, silently.
-resource installSql 'Microsoft.Compute/virtualMachines/extensions@2023-09-01' = {
+// Install SQL Server Management Studio (SSMS) 22 silently. No SQL engine needed —
+// this box is only used to connect to Azure SQL over the private endpoint.
+resource installSsms 'Microsoft.Compute/virtualMachines/extensions@2023-09-01' = {
   parent: vm
-  name: 'InstallSqlDevAndSsms'
+  name: 'InstallSsms'
   location: location
   properties: {
     publisher: 'Microsoft.Compute'
@@ -111,7 +111,7 @@ resource installSql 'Microsoft.Compute/virtualMachines/extensions@2023-09-01' = 
     typeHandlerVersion: '1.10'
     autoUpgradeMinorVersion: true
     settings: {
-      commandToExecute: 'powershell -ExecutionPolicy Unrestricted -Command "$ErrorActionPreference=\'Continue\'; $d=\'C:\\sqlsetup\'; New-Item -ItemType Directory -Force -Path $d | Out-Null; try { Invoke-WebRequest -UseBasicParsing -Uri \'https://aka.ms/sql2025-developer-iso\' -OutFile $d\\sql.iso } catch { Invoke-WebRequest -UseBasicParsing -Uri \'https://go.microsoft.com/fwlink/?linkid=2215158\' -OutFile $d\\sql.iso }; $m=Mount-DiskImage -ImagePath $d\\sql.iso -PassThru; $v=($m | Get-Volume).DriveLetter; & ($v+\':\\setup.exe\') /Q /ACTION=Install /FEATURES=SQLENGINE /INSTANCENAME=MSSQLSERVER /SQLSYSADMINACCOUNTS=BUILTIN\\Administrators /IACCEPTSQLSERVERLICENSETERMS /EDITION=Developer /TCPENABLED=1; Dismount-DiskImage -ImagePath $d\\sql.iso; Invoke-WebRequest -UseBasicParsing -Uri \'https://aka.ms/ssmsfullsetup\' -OutFile $d\\ssms.exe; Start-Process $d\\ssms.exe -ArgumentList \'/install /quiet /norestart\' -Wait"'
+      commandToExecute: 'powershell -ExecutionPolicy Unrestricted -Command "$ErrorActionPreference=\'Continue\'; $d=\'C:\\sqlsetup\'; New-Item -ItemType Directory -Force -Path $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri \'https://aka.ms/ssms/22/release/vs_SSMS.exe\' -OutFile $d\\ssms.exe; Start-Process $d\\ssms.exe -ArgumentList \'--quiet --norestart\' -Wait"'
     }
   }
 }
