@@ -12,6 +12,8 @@ param mgmtAllowedSourceIp string = ''
 var appGatewaySubnetName = 'snet-appgw'
 var appSubnetName = 'snet-app'
 var mgmtSubnetName = 'snet-mgmt'
+var funcSubnetName = 'snet-func'
+var peSubnetName = 'snet-pe'
 
 // NSG for the Application Gateway subnet. App Gateway v2 requires inbound from the
 // Internet (80/443) for client traffic and from the GatewayManager service tag
@@ -97,6 +99,31 @@ resource mgmtNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
   }
 }
 
+// NSG for the SRE SQL-bridge Function integration subnet. Outbound-only
+// (regional VNet integration, delegated to Microsoft.Web/serverFarms); the
+// default rules permit the required outbound traffic to the SQL private
+// endpoint. Declared so the subnet has an explicit, version-controlled NSG.
+resource funcNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
+  name: 'vnet-${resourceToken}-snet-func-nsg-${location}'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: []
+  }
+}
+
+// NSG for the private-endpoint subnet (Azure SQL private endpoint). Private
+// endpoints don't use NSG rules for their own traffic, but an explicit,
+// version-controlled NSG keeps the subnet consistent with the others.
+resource peNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
+  name: 'vnet-${resourceToken}-snet-pe-nsg-${location}'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: []
+  }
+}
+
 resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
   name: 'vnet-${resourceToken}'
   location: location
@@ -151,6 +178,36 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
           }
         }
       }
+      {
+        name: peSubnetName
+        properties: {
+          addressPrefix: '10.0.3.0/24'
+          networkSecurityGroup: {
+            id: peNsg.id
+          }
+          // Required so the subnet can host private endpoints.
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
+      {
+        name: funcSubnetName
+        properties: {
+          addressPrefix: '10.0.5.0/24'
+          networkSecurityGroup: {
+            id: funcNsg.id
+          }
+          // Delegated to App Service for the SRE SQL-bridge Function's
+          // regional VNet integration (outbound to the SQL private endpoint).
+          delegations: [
+            {
+              name: 'webapp'
+              properties: {
+                serviceName: 'Microsoft.Web/serverFarms'
+              }
+            }
+          ]
+        }
+      }
     ]
   }
 }
@@ -198,5 +255,8 @@ resource wafPolicy 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPo
 output appGatewaySubnetId string = '${vnet.id}/subnets/${appGatewaySubnetName}'
 output appSubnetId string = '${vnet.id}/subnets/${appSubnetName}'
 output mgmtSubnetId string = '${vnet.id}/subnets/${mgmtSubnetName}'
+output funcSubnetId string = '${vnet.id}/subnets/${funcSubnetName}'
+output peSubnetId string = '${vnet.id}/subnets/${peSubnetName}'
+output vnetId string = vnet.id
 output publicIpId string = publicIp.id
 output wafPolicyId string = wafPolicy.id

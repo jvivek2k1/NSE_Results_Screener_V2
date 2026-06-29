@@ -495,6 +495,70 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ------------------------------------------------------------------
+# 8a. SRE SQL-bridge: build its container image, grant its managed identity
+#     least-privilege SQL access, then lock the SQL server down to private-only.
+#     Runs AFTER azd up (the bridge infra now exists) and BEFORE the lockdown,
+#     because the grants connect to SQL over the public endpoint from this
+#     machine (SQL is provisioned with public access Enabled for exactly this).
+# ------------------------------------------------------------------
+Write-Step "Configuring the SRE SQL-bridge (image + grants + lockdown)"
+
+$bridgeValues = azd env get-values 2>$null
+function Get-BridgeVal($name) {
+    $line = $bridgeValues | Select-String "^$name="
+    if ($line) { return ($line.ToString() -replace "^$name=", '' -replace '"', '') }
+    return $null
+}
+
+$acrName       = Get-BridgeVal 'SQL_BRIDGE_ACR_NAME'
+$bridgeFunc    = Get-BridgeVal 'SQL_BRIDGE_FUNCTION_NAME'
+$sqlServerName = Get-BridgeVal 'SQL_SERVER'
+# Image tag must match the sqlBridgeImageTag param default in infra/main.bicep.
+$bridgeTag     = 'v2'
+
+if ([string]::IsNullOrWhiteSpace($acrName) -or [string]::IsNullOrWhiteSpace($bridgeFunc)) {
+    Write-Warn2 "SRE bridge outputs not found; skipping bridge image/grants."
+}
+else {
+    # 1) Build + push the bridge image into ACR (ACR Tasks - no local Docker).
+    Write-Host "    Building bridge image ${acrName}.azurecr.io/sqlbridge:$bridgeTag ..." -ForegroundColor DarkGray
+    az acr build -r $acrName -t "sqlbridge:$bridgeTag" ./functionapp --only-show-errors
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn2 "Bridge image build failed. Re-run later: az acr build -r $acrName -t sqlbridge:$bridgeTag ./functionapp"
+    }
+    else {
+        Write-Ok "Bridge image pushed"
+        az functionapp restart --name $bridgeFunc --resource-group $ResourceGroup --only-show-errors 1>$null 2>$null
+        Write-Ok "Bridge Function restarted to pull the image"
+    }
+
+    # 2) Grant the bridge MI least-privilege SQL access: server login + JBDB user
+    #    + VIEW DATABASE STATE + KILL DATABASE CONNECTION. Over the public
+    #    endpoint (still Enabled here); the scripts auto-add a firewall rule.
+    Write-Host "    Granting bridge managed identity SQL access..." -ForegroundColor DarkGray
+    node ./scripts/grant-sre-bridge-sql.mjs
+    if ($LASTEXITCODE -ne 0) { Write-Warn2 "grant-sre-bridge-sql.mjs failed; re-run it manually after deployment." }
+    node ./scripts/grant-sre-bridge-jbdb.mjs
+    if ($LASTEXITCODE -ne 0) { Write-Warn2 "grant-sre-bridge-jbdb.mjs failed; re-run it manually after deployment." }
+    Write-Ok "Bridge SQL grants applied"
+}
+
+# 3) Lock the SQL server down to private-only. All runtime traffic (web app and
+#    bridge Function) flows through the private endpoint; the data-plane grant
+#    hooks above no longer need the public endpoint.
+if (-not [string]::IsNullOrWhiteSpace($sqlServerName)) {
+    Write-Host "    Disabling SQL public network access (private-endpoint only)..." -ForegroundColor DarkGray
+    $locked = $false
+    for ($i = 1; $i -le 3; $i++) {
+        az sql server update -g $ResourceGroup -n $sqlServerName --set publicNetworkAccess=Disabled --only-show-errors 1>$null 2>$null
+        if ($LASTEXITCODE -eq 0) { $locked = $true; break }
+        Start-Sleep -Seconds 5
+    }
+    if ($locked) { Write-Ok "SQL is now private-only (public access disabled)" }
+    else { Write-Warn2 "Could not disable SQL public access. Run: az sql server update -g $ResourceGroup -n $sqlServerName --set publicNetworkAccess=Disabled" }
+}
+
+# ------------------------------------------------------------------
 # 8b. Store the email app password in Key Vault (if email enabled).
 # ------------------------------------------------------------------
 if ($emailEnabled -and $emailPasswordPlain) {

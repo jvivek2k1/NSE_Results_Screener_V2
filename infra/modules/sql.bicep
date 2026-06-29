@@ -17,6 +17,16 @@ param principalType string = 'User'
 @description('Resource ID of the action group that receives the SQL CPU alert.')
 param actionGroupId string = ''
 
+@description('Resource ID of the subnet (snet-pe) that hosts the SQL private endpoint.')
+param peSubnetId string
+
+@description('Resource ID of the virtual network the private DNS zone is linked to.')
+param vnetId string
+
+@allowed(['Enabled', 'Disabled'])
+@description('SQL public network access. Kept \'Enabled\' during provisioning so the post-provision data-plane grant hooks (and the SRE bridge grants) can reach the server from the deploy machine. The deploy script locks it down to \'Disabled\' as a final step; all app/runtime traffic flows through the private endpoint regardless.')
+param publicNetworkAccess string = 'Enabled'
+
 resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
   name: 'sql-${resourceToken}'
   location: location
@@ -27,7 +37,10 @@ resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
   properties: {
     version: '12.0'
     minimalTlsVersion: '1.2'
-    publicNetworkAccess: 'Enabled'
+    // Public access is parameterized: 'Enabled' during provisioning so the
+    // data-plane grant hooks can connect, then the deploy script flips it to
+    // 'Disabled'. Runtime traffic always uses the private endpoint (pe-sql).
+    publicNetworkAccess: publicNetworkAccess
     administrators: {
       administratorType: 'ActiveDirectory'
       principalType: principalType
@@ -59,13 +72,78 @@ resource sqlDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
   }
 }
 
-// Allow other Azure services (the App Service outbound IPs) to reach the server.
+// Firewall rule retained for parity with the live server. With
+// publicNetworkAccess = 'Disabled' this rule is inert (all access flows through
+// the private endpoint), but it is harmless and matches the deployed state.
 resource allowAzure 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
   parent: sqlServer
   name: 'AllowAllWindowsAzureIps'
   properties: {
     startIpAddress: '0.0.0.0'
     endIpAddress: '0.0.0.0'
+  }
+}
+
+// ============================================================
+// Private connectivity: private endpoint + private DNS zone so the SQL server
+// resolves to a VNet-internal address (10.0.3.x) for the web app and the SQL
+// bridge Function. Mirrors the live pe-sql / privatelink.database.windows.net.
+// ============================================================
+resource sqlPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = {
+  name: 'pe-sql-${resourceToken}'
+  location: location
+  tags: tags
+  properties: {
+    subnet: {
+      id: peSubnetId
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'pe-sql-${resourceToken}'
+        properties: {
+          privateLinkServiceId: sqlServer.id
+          groupIds: [
+            'sqlServer'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource sqlPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink${environment().suffixes.sqlServerHostname}'
+  location: 'global'
+  tags: tags
+}
+
+resource sqlPrivateDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: sqlPrivateDnsZone
+  name: 'vnetlink-sql'
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnetId
+    }
+  }
+}
+
+// Wires the private endpoint's NIC to the private DNS zone, which creates and
+// maintains the A record (sql-<token> -> 10.0.3.x) automatically.
+resource sqlPrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
+  parent: sqlPrivateEndpoint
+  name: 'sqlZoneGroup'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'privatelink-database-windows-net'
+        properties: {
+          privateDnsZoneId: sqlPrivateDnsZone.id
+        }
+      }
+    ]
   }
 }
 
@@ -155,3 +233,5 @@ resource sqlBlockingAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!em
 output sqlServerName string = sqlServer.name
 output sqlServerFqdn string = sqlServer.properties.fullyQualifiedDomainName
 output sqlDatabaseName string = sqlDatabase.name
+output sqlPrivateEndpointName string = sqlPrivateEndpoint.name
+output sqlPrivateDnsZoneName string = sqlPrivateDnsZone.name
