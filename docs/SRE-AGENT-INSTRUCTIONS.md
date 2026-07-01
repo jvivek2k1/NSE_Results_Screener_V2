@@ -164,6 +164,12 @@ roll the change back.
 SKUs/capacity; broad WAF rule changes; `azd provision` / `azd up` (infra changes);
 network/identity topology changes; anything destructive or affecting other workloads.
 
+**Restarting the App Service always requires user confirmation — even when the agent is
+operating autonomously.** A restart is disruptive (drops in-flight requests, resets the
+scan cron and connection pools, and incurs cold-start latency), so any agent (including the
+SRE agent) must obtain explicit user permission before restarting `app-010726194448`. This
+is never an auto-approved action.
+
 **Before enabling public network access on Azure SQL:** verify whether a Private Endpoint
 already exists for the SQL server. If one is present, do **not** enable public access —
 keep traffic on the private endpoint and investigate connectivity through it instead.
