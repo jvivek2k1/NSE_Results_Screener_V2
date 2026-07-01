@@ -200,7 +200,11 @@ resource sqlBlockingAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = 
     scopes: [
       appInsights.id
     ]
-    evaluationFrequency: 'PT1M'
+    // Scheduled query rules that read non-"known" tables (e.g. App Insights
+    // customMetrics) only support a minimum 5-minute evaluation frequency.
+    // PT1M triggers "QueryNotContainKnownTable: One-minute frequency is not
+    // supported for this query." See https://aka.ms/lsa_1m_limits.
+    evaluationFrequency: 'PT5M'
     windowSize: 'PT5M'
     criteria: {
       allOf: [
