@@ -101,14 +101,6 @@ BEGIN
   DECLARE @cnt BIGINT;
   WHILE @i < @Iterations
   BEGIN
-    -- Realistic OLTP workload: a "customer account summary" lookup (total spend
-    -- and order count for one customer), rotated across many customers. ROOT
-    -- CAUSE: there is NO index on dbo.jb_Orders(CustomerId), so every lookup
-    -- FULL-SCANS the multi-million-row clustered index. Remediation (left to the
-    -- SRE Agent): create a covering index
-    --   CREATE NONCLUSTERED INDEX IX_jb_Orders_CustomerId
-    --     ON dbo.jb_Orders (CustomerId) INCLUDE (Amount);
-    -- which turns each scan into a ~40-row seek, so CPU drops on its own.
     SET @CustomerId = (ABS(CHECKSUM(NEWID())) % 50000) + 1;
     SELECT @total = SUM(o.Amount), @cnt = COUNT_BIG(*)
     FROM dbo.jb_Orders AS o
