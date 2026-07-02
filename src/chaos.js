@@ -108,14 +108,16 @@ export async function removeAiModel() {
 }
 
 // -------------------- 3) Drive Azure SQL CPU to 100% (realistic) --------------------
-// This is a real-world "untuned query" incident, not an artificial spin loop.
-// A large dbo.jb_Orders table is created in a deliberately unoptimized state, so
-// dbo.jb_RunSalesReport repeatedly full-scans every row. Running it in parallel
-// saturates the serverless vCores -> CPU ~100% and the app degrades.
+// This is a real-world "missing index" incident, not an artificial spin loop.
+// A large dbo.jb_Orders table is created with NO index on CustomerId, so the
+// "customer account summary" lookup in dbo.jb_RunSalesReport full-scans the whole
+// clustered index on every call. Running it in parallel saturates the serverless
+// vCores -> CPU ~100% and the app degrades.
 //
 // Diagnosing the root cause and applying the appropriate, reversible remediation
 // is left to the SRE Agent (see the "SQL CPU saturation" scenario in
-// docs/RUNBOOK.md). Once the workload is tuned the scans become cheap and CPU
+// docs/RUNBOOK.md). Adding a covering index on (CustomerId) INCLUDE (Amount)
+// turns each scan into a tiny seek, so the same workload becomes cheap and CPU
 // drops on its own.
 // Runs CONTINUOUSLY by default so the spike dwells at ~100% until the SRE Agent
 // remediates the incident (once the workload is tuned the scans become cheap, so
@@ -137,10 +139,10 @@ const CPU_ORDERS_ROWS = parseInt(process.env.CHAOS_ORDERS_ROWS || '2000000', 10)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Create the orders table (UNINDEXED on the report predicate, on purpose) and
-// the untuned reporting procedure if the deployment script has not already done
-// so. Idempotent. NOTE: this intentionally leaves the table in its unoptimized
-// state — the remediation is what the SRE Agent is expected to figure out.
+// Create the orders table (deliberately with NO index on CustomerId) and the
+// lookup procedure if the deployment script has not already done so. Idempotent.
+// NOTE: this intentionally leaves the table missing the CustomerId index — adding
+// that covering index is the remediation the SRE Agent is expected to figure out.
 export async function ensureChaosSchema() {
   await runRawBatch(`
 IF OBJECT_ID('dbo.jb_Orders', 'U') IS NULL
@@ -179,25 +181,25 @@ AS
 BEGIN
   SET NOCOUNT ON;
   DECLARE @i INT = 0;
-  DECLARE @region NVARCHAR(40);
-  DECLARE @total FLOAT;
+  DECLARE @CustomerId INT;
+  DECLARE @total DECIMAL(38,2);
   DECLARE @cnt BIGINT;
   WHILE @i < @Iterations
   BEGIN
-    SET @region = CHOOSE((@i % 5) + 1, N'North', N'South', N'East', N'West', N'Central');
-    -- "Pending revenue + risk score for a region over the last year." UNTUNED:
-    -- this full-scans the multi-million-row dbo.jb_Orders on every pass AND runs
-    -- heavy per-row math (SQRT/POWER/LOG) on every surviving row. Remediation is
-    -- left to the SRE Agent (see runbook).
-    SELECT @total = SUM(o.Amount
-                      * SQRT(POWER(CAST(o.Amount AS FLOAT), 2.0)
-                           + POWER(CAST(o.CustomerId AS FLOAT), 2.0))
-                      + LOG(ABS(CHECKSUM(o.CustomerId, o.OrderDate)) + 1.0)),
-           @cnt = COUNT_BIG(*)
+    -- Realistic OLTP workload: a "customer account summary" lookup (total spend
+    -- and order count for one customer), rotated across many customers so it
+    -- looks like a stream of API requests. ROOT CAUSE: there is NO index on
+    -- dbo.jb_Orders(CustomerId), so every lookup FULL-SCANS the multi-million-row
+    -- clustered index. Run in parallel continuously this pegs CPU at ~100%.
+    -- FIX (left to the SRE Agent): create a covering index
+    --   CREATE NONCLUSTERED INDEX IX_jb_Orders_CustomerId
+    --     ON dbo.jb_Orders (CustomerId) INCLUDE (Amount);
+    -- which turns each full scan into a ~40-row seek, so the identical workload
+    -- becomes cheap and CPU drops on its own.
+    SET @CustomerId = (ABS(CHECKSUM(NEWID())) % 50000) + 1;
+    SELECT @total = SUM(o.Amount), @cnt = COUNT_BIG(*)
     FROM dbo.jb_Orders AS o
-    WHERE o.Status = N'PENDING'
-      AND o.Region = @region
-      AND o.OrderDate >= DATEADD(DAY, -365, SYSUTCDATETIME());
+    WHERE o.CustomerId = @CustomerId;
     SET @i += 1;
   END
 END

@@ -1,8 +1,8 @@
 // ============================================================
 // SRE chaos demo — provision the Azure SQL objects used by the realistic
-// "SQL CPU 100%" scenario: a large dbo.jb_Orders table that is deliberately left
-// unoptimized for its reporting queries, plus dbo.jb_RunSalesReport, an untuned
-// procedure that full-scans the table on every call.
+// "SQL CPU 100%" scenario: a large dbo.jb_Orders table created with NO index on
+// CustomerId, plus dbo.jb_RunSalesReport, a "customer account summary" lookup
+// that full-scans the table on every call because that index is missing.
 //
 // The incident: running the report in parallel pegs CPU at ~100%. Diagnosing the
 // root cause and applying the appropriate, reversible remediation is left to the
@@ -48,10 +48,10 @@ if (!serverRaw || !database) {
 }
 const server = serverRaw.includes('.') ? serverRaw : `${serverRaw}.database.windows.net`;
 
-// Large orders table — DELIBERATELY missing the (Status, Region, OrderDate)
-// index its reports need. Created once, then idempotently TOPPED UP to the
-// target row count so re-running the script (or raising CHAOS_ORDERS_ROWS) grows
-// an existing table instead of leaving it small.
+// Large orders table — DELIBERATELY missing the index on CustomerId that its
+// lookup query needs. Created once, then idempotently TOPPED UP to the target
+// row count so re-running the script (or raising CHAOS_ORDERS_ROWS) grows an
+// existing table instead of leaving it small.
 const tableBatch = `
 IF OBJECT_ID('dbo.jb_Orders', 'U') IS NULL
 BEGIN
@@ -88,7 +88,7 @@ BEGIN
 END
 `;
 
-// Untuned reporting procedure — must be the only statement in its batch.
+// Missing-index lookup procedure — must be the only statement in its batch.
 const procBatch = `
 CREATE OR ALTER PROCEDURE dbo.jb_RunSalesReport
   @Iterations INT = 50
@@ -96,24 +96,23 @@ AS
 BEGIN
   SET NOCOUNT ON;
   DECLARE @i INT = 0;
-  DECLARE @region NVARCHAR(40);
-  DECLARE @total FLOAT;
+  DECLARE @CustomerId INT;
+  DECLARE @total DECIMAL(38,2);
   DECLARE @cnt BIGINT;
   WHILE @i < @Iterations
   BEGIN
-    SET @region = CHOOSE((@i % 5) + 1, N'North', N'South', N'East', N'West', N'Central');
-    -- UNTUNED: full clustered scan of the multi-million-row dbo.jb_Orders on
-    -- every pass, plus heavy per-row math (SQRT/POWER/LOG) on every surviving
-    -- row. Remediation is left to the SRE Agent.
-    SELECT @total = SUM(o.Amount
-                      * SQRT(POWER(CAST(o.Amount AS FLOAT), 2.0)
-                           + POWER(CAST(o.CustomerId AS FLOAT), 2.0))
-                      + LOG(ABS(CHECKSUM(o.CustomerId, o.OrderDate)) + 1.0)),
-           @cnt = COUNT_BIG(*)
+    -- Realistic OLTP workload: a "customer account summary" lookup (total spend
+    -- and order count for one customer), rotated across many customers. ROOT
+    -- CAUSE: there is NO index on dbo.jb_Orders(CustomerId), so every lookup
+    -- FULL-SCANS the multi-million-row clustered index. Remediation (left to the
+    -- SRE Agent): create a covering index
+    --   CREATE NONCLUSTERED INDEX IX_jb_Orders_CustomerId
+    --     ON dbo.jb_Orders (CustomerId) INCLUDE (Amount);
+    -- which turns each scan into a ~40-row seek, so CPU drops on its own.
+    SET @CustomerId = (ABS(CHECKSUM(NEWID())) % 50000) + 1;
+    SELECT @total = SUM(o.Amount), @cnt = COUNT_BIG(*)
     FROM dbo.jb_Orders AS o
-    WHERE o.Status = N'PENDING'
-      AND o.Region = @region
-      AND o.OrderDate >= DATEADD(DAY, -365, SYSUTCDATETIME());
+    WHERE o.CustomerId = @CustomerId;
     SET @i += 1;
   END
 END
