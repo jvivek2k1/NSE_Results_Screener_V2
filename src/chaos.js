@@ -132,7 +132,7 @@ const CPU_BURN_PARALLELISM = parseInt(process.env.CHAOS_CPU_PARALLELISM || '4', 
 // Number of unindexed report passes per stored-proc call. Kept small enough that
 // a single call stays under the pool's request timeout (30s); workers re-fire
 // until the total CPU_BURN_SECONDS budget elapses.
-const CPU_REPORT_ITERATIONS = parseInt(process.env.CHAOS_CPU_ITERATIONS || '50', 10);
+const CPU_REPORT_ITERATIONS = parseInt(process.env.CHAOS_CPU_ITERATIONS || '30', 10);
 // Rows seeded into the (deliberately unindexed) orders table. Large enough that a
 // full clustered scan is genuinely expensive on the serverless vCores.
 const CPU_ORDERS_ROWS = parseInt(process.env.CHAOS_ORDERS_ROWS || '2000000', 10);
@@ -176,7 +176,7 @@ END
   // CREATE/ALTER PROCEDURE must be the only statement in its batch.
   await runRawBatch(`
 CREATE OR ALTER PROCEDURE dbo.jb_RunSalesReport
-  @Iterations INT = 50
+  @Iterations INT = 30
 AS
 BEGIN
   SET NOCOUNT ON;

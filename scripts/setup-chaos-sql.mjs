@@ -91,7 +91,7 @@ END
 // Missing-index lookup procedure — must be the only statement in its batch.
 const procBatch = `
 CREATE OR ALTER PROCEDURE dbo.jb_RunSalesReport
-  @Iterations INT = 50
+  @Iterations INT = 30
 AS
 BEGIN
   SET NOCOUNT ON;

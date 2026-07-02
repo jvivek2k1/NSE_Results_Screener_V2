@@ -123,7 +123,7 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
         // diagnoses and remediates it (tuning the workload makes the scans cheap).
         { name: 'CHAOS_CPU_SECONDS', value: '0' }
         { name: 'CHAOS_CPU_PARALLELISM', value: '4' }
-        { name: 'CHAOS_CPU_ITERATIONS', value: '50' }
+        { name: 'CHAOS_CPU_ITERATIONS', value: '30' }
         { name: 'CHAOS_ORDERS_ROWS', value: '2000000' }
       ], emailAppSettings)
     }
